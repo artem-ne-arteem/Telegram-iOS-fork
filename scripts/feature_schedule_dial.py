@@ -13,8 +13,10 @@ old = "func chatMessageDisplaySendMessageOptions(selfController: ChatControllerI
 new = """func chatMessageDisplaySendMessageOptions(selfController: ChatControllerImpl, node: ASDisplayNode, gesture: ContextGesture) {
     // Schedule Dial: a new message is scheduled from a dial instead of the options menu.
     if selfController.presentationInterfaceState.interfaceState.editMessage == nil, selfController.presentationInterfaceState.subject != .scheduledMessages, selfController.chatLocation.peerId != nil {
+        // The long-press gesture lives on the send button itself.
+        let sendControl = gesture.view?.asyncdisplaykit_node as? ASControlNode
         gesture.cancel()
-        presentChatScheduleDial(selfController: selfController, sendButton: node)
+        presentChatScheduleDial(selfController: selfController, sendButton: node, sendControl: sendControl)
         return
     }
     chatMessageDisplayDefaultSendMessageOptions(selfController: selfController, node: node, gesture: gesture)
@@ -30,7 +32,7 @@ source += r'''
 
 // MARK: - Schedule Dial
 
-private func presentChatScheduleDial(selfController: ChatControllerImpl, sendButton: ASDisplayNode) {
+private func presentChatScheduleDial(selfController: ChatControllerImpl, sendButton: ASDisplayNode, sendControl: ASControlNode?) {
     guard let window = selfController.view.window else {
         return
     }
@@ -39,6 +41,9 @@ private func presentChatScheduleDial(selfController: ChatControllerImpl, sendBut
     let accentColor = theme.list.itemAccentColor
     let primaryColor = theme.list.itemPrimaryTextColor
     let isDark = theme.overallDarkAppearance
+
+    // Lifting the finger after the long press must not count as a tap on Send.
+    sendControl?.isEnabled = false
 
     let controller = ChatScheduleDialController(makeDial: { bounds in
         return ChatScheduleDialView(frame: bounds, sendButtonFrame: sendButtonFrame, accentColor: accentColor, primaryColor: primaryColor, isDark: isDark)
@@ -54,6 +59,8 @@ private func presentChatScheduleDial(selfController: ChatControllerImpl, sendBut
                 $0.updatedInterfaceState { $0.withUpdatedReplyMessageSubject(nil).withUpdatedSendMessageEffect(nil).withUpdatedPostSuggestionState(nil).withUpdatedForwardMessageIds(nil).withUpdatedForwardOptionsState(nil).withUpdatedComposeInputState(ChatTextInputState(inputText: NSAttributedString(string: ""))) }
             })
         })
+    }, onClosed: { [weak sendControl] in
+        sendControl?.isEnabled = true
     })
     selfController.present(controller, in: .window(.root))
 }
@@ -63,11 +70,13 @@ private func presentChatScheduleDial(selfController: ChatControllerImpl, sendBut
 private final class ChatScheduleDialController: ViewController {
     private let makeDial: (CGRect) -> ChatScheduleDialView
     private let onSchedule: (Int32, Bool) -> Void
+    private let onClosed: () -> Void
     private var dialView: ChatScheduleDialView?
 
-    init(makeDial: @escaping (CGRect) -> ChatScheduleDialView, onSchedule: @escaping (Int32, Bool) -> Void) {
+    init(makeDial: @escaping (CGRect) -> ChatScheduleDialView, onSchedule: @escaping (Int32, Bool) -> Void, onClosed: @escaping () -> Void) {
         self.makeDial = makeDial
         self.onSchedule = onSchedule
+        self.onClosed = onClosed
         super.init(navigationBarPresentationData: nil)
         self.statusBar.statusBarStyle = .Ignore
     }
@@ -90,7 +99,9 @@ private final class ChatScheduleDialController: ViewController {
             dial.onSchedule = { timestamp, silent in
                 onSchedule(timestamp, silent)
             }
+            let onClosed = self.onClosed
             dial.onClosed = { [weak self] in
+                onClosed()
                 self?.dismiss(completion: nil)
             }
             self.dialView = dial
@@ -152,7 +163,13 @@ private final class ChatScheduleDialView: UIView {
         self.pivot = CGPoint(x: pivotX, y: sendButtonFrame.minY - 16.0 - hubRadius)
 
         let material: UIBlurEffect.Style = isDark ? .systemChromeMaterialDark : .systemChromeMaterialLight
-        self.bellView = UIVisualEffectView(effect: UIBlurEffect(style: material))
+        var bellIsGlass = false
+        if #available(iOS 26.0, *) {
+            self.bellView = UIVisualEffectView(effect: UIGlassEffect())
+            bellIsGlass = true
+        } else {
+            self.bellView = UIVisualEffectView(effect: UIBlurEffect(style: material))
+        }
 
         // Start one hour from now, rounded to five minutes.
         let start = Date().addingTimeInterval(3600.0)
@@ -245,9 +262,13 @@ private final class ChatScheduleDialView: UIView {
         let bellSize: CGFloat = 46.0
         self.bellView.frame = CGRect(x: self.pivot.x - bellSize / 2.0, y: self.pivot.y - radius - bellSize / 2.0, width: bellSize, height: bellSize)
         self.bellView.layer.cornerRadius = bellSize / 2.0
-        self.bellView.clipsToBounds = true
-        self.bellView.layer.borderWidth = 1.0
-        self.bellView.layer.borderColor = UIColor.white.withAlphaComponent(isDark ? 0.18 : 0.6).cgColor
+        self.bellView.layer.cornerCurve = .circular
+        if !bellIsGlass {
+            // Liquid Glass draws its own edge; the blur fallback gets a thin outline.
+            self.bellView.clipsToBounds = true
+            self.bellView.layer.borderWidth = 1.0
+            self.bellView.layer.borderColor = UIColor.white.withAlphaComponent(isDark ? 0.18 : 0.6).cgColor
+        }
         self.contentView.addSubview(self.bellView)
         self.bellButton.frame = self.bellView.frame
         self.bellButton.addTarget(self, action: #selector(self.bellPressed), for: .touchUpInside)
