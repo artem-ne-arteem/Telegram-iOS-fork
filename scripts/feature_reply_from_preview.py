@@ -70,7 +70,7 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
         self.attachButton.addTarget(self, action: #selector(self.attachPressed), for: .touchUpInside)
         self.view.addSubview(self.attachButton)
 
-        self.textField.font = UIFont.systemFont(ofSize: 17.0)
+        self.textField.font = UIFont.systemFont(ofSize: 16.0)
         self.textField.returnKeyType = .send
         self.textField.enablesReturnKeyAutomatically = true
         self.textField.delegate = self
@@ -94,14 +94,14 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
 
     func updateLayout(constrainedWidth: CGFloat, constrainedHeight: CGFloat) -> (CGSize, (CGSize, ContainedViewLayoutTransition) -> Void) {
         // Same width as the chat preview above it.
-        let size = CGSize(width: max(240.0, constrainedWidth - 32.0), height: 52.0)
+        let size = CGSize(width: max(240.0, constrainedWidth - 32.0), height: 44.0)
         return (size, { [weak self] size, _ in
             self?.layoutContents(size: size)
         })
     }
 
     private func layoutContents(size: CGSize) {
-        let buttonSize: CGFloat = 44.0
+        let buttonSize: CGFloat = 40.0
         let buttonY = floor((size.height - buttonSize) / 2.0)
         self.attachButton.frame = CGRect(x: 6.0, y: buttonY, width: buttonSize, height: buttonSize)
         self.actionButton.frame = CGRect(x: size.width - 6.0 - buttonSize, y: buttonY, width: buttonSize, height: buttonSize)
@@ -117,7 +117,7 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
         self.textField.tintColor = presentationData.theme.list.itemAccentColor
         self.textField.attributedPlaceholder = NSAttributedString(
             string: presentationData.strings.Conversation_InputTextPlaceholder,
-            attributes: [.foregroundColor: menuTheme.secondaryColor, .font: UIFont.systemFont(ofSize: 17.0)]
+            attributes: [.foregroundColor: menuTheme.secondaryColor, .font: UIFont.systemFont(ofSize: 16.0)]
         )
         self.updateButtons()
     }
@@ -137,10 +137,10 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
     }
 
     private func updateButtons() {
-        let configuration = UIImage.SymbolConfiguration(pointSize: 20.0, weight: .regular)
+        let configuration = UIImage.SymbolConfiguration(pointSize: 18.0, weight: .regular)
         self.attachButton.setImage(UIImage(systemName: "paperclip", withConfiguration: configuration), for: .normal)
         if self.hasText {
-            self.actionButton.setImage(UIImage(systemName: "arrow.up.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 30.0, weight: .regular)), for: .normal)
+            self.actionButton.setImage(UIImage(systemName: "arrow.up.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 27.0, weight: .regular)), for: .normal)
             self.actionButton.tintColor = self.presentationData.theme.list.itemAccentColor
         } else {
             self.actionButton.setImage(UIImage(systemName: "mic", withConfiguration: configuration), for: .normal)
@@ -149,8 +149,9 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
     }
 
     /// The text turns into an outgoing bubble and flies from the field into the preview above.
-    private func animateSentMessage(text: String) {
+    private func animateSentMessage(text: String, landed: @escaping () -> Void) {
         guard let window = self.view.window else {
+            landed()
             return
         }
         let theme = self.presentationData.theme
@@ -185,11 +186,12 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
         UIView.animate(withDuration: 0.12, animations: {
             bubble.alpha = 1.0
         })
-        UIView.animate(withDuration: 0.55, delay: 0.0, usingSpringWithDamping: 0.78, initialSpringVelocity: 0.3, options: [.curveEaseOut], animations: {
+        UIView.animate(withDuration: 0.45, delay: 0.0, usingSpringWithDamping: 0.85, initialSpringVelocity: 0.3, options: [.curveEaseOut], animations: {
             bubble.center = target
             bubble.transform = .identity
         }, completion: { _ in
-            UIView.animate(withDuration: 0.25, delay: 0.15, options: [], animations: {
+            landed()
+            UIView.animate(withDuration: 0.2, delay: 0.25, options: [], animations: {
                 bubble.alpha = 0.0
             }, completion: { _ in
                 bubble.removeFromSuperview()
@@ -248,11 +250,17 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
         self.textField.text = nil
         self.updateButtons()
 
-        self.animateSentMessage(text: text)
-        let _ = self.item.context.engine.messages.enqueueOutgoingMessage(to: self.item.peerId, replyTo: nil, content: .text(text, [])).startStandalone()
+        let item = self.item
+        self.animateSentMessage(text: text, landed: { [weak self] in
+            // Send exactly when the bubble lands, so the real message replaces it.
+            let _ = item.context.engine.messages.enqueueOutgoingMessage(to: item.peerId, replyTo: nil, content: .text(text, [])).startStandalone()
+            self?.scheduleDismissAfterSend()
+        })
+    }
 
+    private func scheduleDismissAfterSend() {
         // Leave the preview on screen for a moment so the sent message shows up in it.
-        Queue.mainQueue().after(1.0, { [weak self] in
+        Queue.mainQueue().after(0.9, { [weak self] in
             guard let self else {
                 return
             }
@@ -313,6 +321,30 @@ patch("submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextCon
 
 # Presentation: center a wide block, go below the keyboard and lift content while typing.
 patch("submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextControllerExtractedPresentationNode.swift", [
+    ("""            if isContentResizeableVertically && self.actionsStackNode.topPositionLock == nil {
+                var contentHeight = layout.size.height - contentTopInset - contentActionsSpacing - bottomInset - layout.intrinsicInsets.bottom - actionsSize.height""", """            // While a text field in the menu is focused, the content shrinks to fit between the
+            // top of the screen and the field, which sits right above the keyboard.
+            var keyboardFieldInputHeight: CGFloat?
+            if let inputHeight = layout.inputHeight, inputHeight > 0.0, additionalActionsSize.height > 0.0, contextMenuViewContainsFirstResponder(self.actionsContainerNode.view) {
+                keyboardFieldInputHeight = inputHeight
+            }
+
+            if isContentResizeableVertically && self.actionsStackNode.topPositionLock == nil {
+                var contentHeight = layout.size.height - contentTopInset - contentActionsSpacing - bottomInset - layout.intrinsicInsets.bottom - actionsSize.height
+                if let keyboardFieldInputHeight {
+                    contentHeight = layout.size.height - contentTopInset - contentActionsSpacing - keyboardFieldInputHeight - 10.0 - additionalActionsSize.height
+                }"""),
+    ("""                    contentRect.origin.y = combinedBounds.minY
+                }
+            }
+""", """                    contentRect.origin.y = combinedBounds.minY
+                }
+            }
+
+            if let keyboardFieldInputHeight, !isAnimatingOut {
+                contentRect.origin.y = max(contentTopInset, layout.size.height - keyboardFieldInputHeight - 10.0 - additionalActionsSize.height - contentActionsSpacing - contentRect.height)
+            }
+"""),
     ("""                } else {
                     additionalActionsFrame = CGRect(origin: actionsFrame.origin, size: additionalActionsSize)
                     actionsFrame = actionsFrame.offsetBy(dx: 0.0, dy: additionalActionsSize.height + 10.0)
