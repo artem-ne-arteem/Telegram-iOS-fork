@@ -20,6 +20,15 @@ key, cert = os.path.join(work, "key.pem"), os.path.join(work, "cert.pem")
 subprocess.run([openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert,
                 "-days", "3650", "-subj", "/CN=Fake Profile Signer"], check=True, capture_output=True)
 
+# The certificate Telegram's fake profiles are meant to be used with.
+certificate_der = None
+p12_files = glob.glob(os.path.join(root, "**", "*.p12"), recursive=True)
+if p12_files:
+    pem = subprocess.run([openssl, "pkcs12", "-in", p12_files[0], "-passin", "pass:", "-nokeys", "-legacy"],
+                         capture_output=True).stdout
+    certificate_der = subprocess.run([openssl, "x509", "-outform", "DER"], input=pem, capture_output=True).stdout
+    print("certificate from", p12_files[0], len(certificate_der), "bytes")
+
 future = datetime.datetime(2036, 1, 1, tzinfo=datetime.timezone.utc)
 profiles = glob.glob(os.path.join(root, "**", "*.mobileprovision"), recursive=True)
 for path in profiles:
@@ -31,6 +40,9 @@ for path in profiles:
     old = data.get("ExpirationDate")
     data["ExpirationDate"] = future
     data["CreationDate"] = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+    if certificate_der:
+        data["DeveloperCertificates"] = [certificate_der]
+    data.pop("DER-Encoded-Profile", None)
     with open(raw, "wb") as f:
         plistlib.dump(data, f)
     subprocess.run([openssl, "cms", "-sign", "-nodetach", "-binary", "-outform", "DER", "-signer", cert,
