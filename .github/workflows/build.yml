@@ -7,11 +7,11 @@ on:
 
 jobs:
   build:
-    # Две очереди: новый образ macOS 26 и запасной macOS 15.
+    # macOS 26: самый новый Xcode, с ним собирается самая свежая доступная версия Telegram.
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-26, macos-15]
+        runner: [macos-26]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 340
     steps:

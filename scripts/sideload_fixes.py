@@ -21,7 +21,8 @@ replace_once(
     "        precondition(!testIsLaunched)\n        testIsLaunched = true\n"
     "        FileManager.tg_installSideloadAppGroupFallback()\n",
 )
-replace_once("try! PasscodeEnvironment.shared.configure(", "try? PasscodeEnvironment.shared.configure(")
+if "try! PasscodeEnvironment.shared.configure(" in source:
+    replace_once("try! PasscodeEnvironment.shared.configure(", "try? PasscodeEnvironment.shared.configure(")
 
 source += '''
 
