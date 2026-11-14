@@ -15,7 +15,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 340
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Select newest Xcode
         run: |
@@ -82,7 +82,7 @@ jobs:
           cp "$IPA" Telegram.ipa
           ls -la Telegram.ipa
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: Telegram-ipa-${{ matrix.runner }}
           path: Telegram.ipa
