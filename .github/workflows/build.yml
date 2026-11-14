@@ -67,7 +67,8 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
         run: python3 scripts/make_config.py tg/build-system/appstore-configuration.json config.json
 
-      - uses: actions/cache@v5
+      - name: Restore Bazel cache
+        uses: actions/cache/restore@v5
         with:
           path: ~/telegram-bazel-cache
           key: bazel-${{ matrix.runner }}-${{ github.sha }}
@@ -91,9 +92,17 @@ jobs:
               exit 1
             }
 
+      - name: Save Bazel cache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: ~/telegram-bazel-cache
+          key: bazel-${{ matrix.runner }}-${{ github.sha }}-${{ github.run_attempt }}
+
       - name: Collect IPA
         run: |
-          IPA=$(find tg -name "Telegram.ipa" -type f | head -1)
+          IPA=tg/bazel-bin/Telegram/Telegram.ipa
+          [ -f "$IPA" ] || IPA=$(find -L tg/bazel-bin tg/bazel-out -name "Telegram.ipa" -type f 2>/dev/null | head -1)
           echo "IPA: $IPA"
           cp "$IPA" Telegram.ipa
           ls -la Telegram.ipa
