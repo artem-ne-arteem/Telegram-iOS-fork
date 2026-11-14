@@ -46,6 +46,9 @@ jobs:
       - name: Sideload compatibility fixes
         run: python3 scripts/sideload_fixes.py tg
 
+      - name: "Feature: Reply from Preview"
+        run: python3 scripts/feature_reply_from_preview.py tg
+
       - name: Refresh expired fake provisioning profiles
         run: python3 scripts/refresh_profiles.py tg/build-system/fake-codesigning
 
