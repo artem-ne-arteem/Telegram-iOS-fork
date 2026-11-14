@@ -32,8 +32,8 @@ jobs:
           df -h /
           xcode-select -p
 
-      - name: Clone Telegram-iOS
-        run: git clone --recursive --depth 1 --shallow-submodules -j8 https://github.com/TelegramMessenger/Telegram-iOS.git tg
+      - name: Clone Telegram-iOS (version compatible with this Xcode)
+        run: python3 scripts/checkout_compatible.py tg
 
       - name: Apply our patches
         run: |
