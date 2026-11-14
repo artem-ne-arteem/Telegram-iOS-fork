@@ -19,7 +19,7 @@ import ContextUI
 
 /// Reply from Preview: a message field shown as its own glass block between a chat
 /// preview and its context menu, so a chat can be answered without opening it.
-final class ChatListPreviewReplyItem: ContextMenuCustomItem {
+final class ChatListPreviewReplyItem: ContextMenuFullWidthCustomItem {
     let context: AccountContext
     let peerId: EnginePeer.Id
     let openChat: () -> Void
@@ -80,11 +80,15 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
         self.actionButton.addTarget(self, action: #selector(self.actionPressed), for: .touchUpInside)
         self.view.addSubview(self.actionButton)
 
+        // A tap anywhere on the bar focuses the field.
+        self.view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.barTapped)))
+
         self.updateTheme(presentationData: self.presentationData)
     }
 
     func updateLayout(constrainedWidth: CGFloat, constrainedHeight: CGFloat) -> (CGSize, (CGSize, ContainedViewLayoutTransition) -> Void) {
-        let size = CGSize(width: min(constrainedWidth, 340.0), height: 52.0)
+        // Same width as the chat preview above it.
+        let size = CGSize(width: max(240.0, constrainedWidth - 32.0), height: 52.0)
         return (size, { [weak self] size, _ in
             self?.layoutContents(size: size)
         })
@@ -136,6 +140,19 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
             self.actionButton.setImage(UIImage(systemName: "mic", withConfiguration: configuration), for: .normal)
             self.actionButton.tintColor = self.presentationData.theme.contextMenu.primaryColor
         }
+    }
+
+    @objc private func barTapped() {
+        self.textField.becomeFirstResponder()
+    }
+
+    func textFieldDidBeginEditing(_ textField: UITextField) {
+        // Context menus are drawn above the keyboard; move this one below it while typing.
+        self.getController()?.overlayWantsToBeBelowKeyboardUpdated(transition: .animated(duration: 0.3, curve: .spring))
+    }
+
+    func textFieldDidEndEditing(_ textField: UITextField) {
+        self.getController()?.overlayWantsToBeBelowKeyboardUpdated(transition: .animated(duration: 0.3, curve: .spring))
     }
 
     @objc private func textChanged() {
@@ -195,6 +212,100 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
 '''
 
 open(root + "/submodules/ChatListUI/Sources/ChatListPreviewReplyItem.swift", "w", encoding="utf-8").write(ITEM)
+
+
+
+def patch(relative_path, replacements, append=None):
+    file_path = root + "/" + relative_path
+    text = open(file_path, encoding="utf-8").read()
+    for old, new in replacements:
+        count = text.count(old)
+        if count != 1:
+            sys.exit(f"reply_from_preview: expected 1 match in {relative_path}, found {count}:\n{old}")
+        text = text.replace(old, new, 1)
+    if append:
+        text += append
+    open(file_path, "w", encoding="utf-8").write(text)
+
+
+# ContextUI: a custom menu item may ask for the full screen width.
+patch("submodules/ContextUI/Sources/ContextController.swift", [], append="""
+
+/// A custom context menu item laid out at the full width of the screen
+/// instead of the standard context menu width.
+public protocol ContextMenuFullWidthCustomItem: ContextMenuCustomItem {
+}
+""")
+
+# Actions list: don't clamp full-width custom items to the standard menu width.
+patch("submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextControllerActionsStackNode.swift", [
+    ("""private final class ContextControllerActionsListCustomItemNode: ASDisplayNode, ContextControllerActionsListItemNode {
+""", """private final class ContextControllerActionsListCustomItemNode: ASDisplayNode, ContextControllerActionsListItemNode {
+    var wantsFullScreenWidth: Bool {
+        return self.item is ContextMenuFullWidthCustomItem
+    }
+
+"""),
+    ("""                let itemNodeLayout = item.node.update(
+                    presentationData: presentationData,
+                    constrainedSize: CGSize(width: standardMaxWidth, height: constrainedSize.height)
+                )""", """                var itemConstrainedWidth = standardMaxWidth
+                if let customItemNode = item.node as? ContextControllerActionsListCustomItemNode, customItemNode.wantsFullScreenWidth {
+                    itemConstrainedWidth = constrainedSize.width
+                }
+                let itemNodeLayout = item.node.update(
+                    presentationData: presentationData,
+                    constrainedSize: CGSize(width: itemConstrainedWidth, height: constrainedSize.height)
+                )"""),
+])
+
+# Presentation: center a wide block, go below the keyboard and lift content while typing.
+patch("submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextControllerExtractedPresentationNode.swift", [
+    ("""                } else {
+                    additionalActionsFrame = CGRect(origin: actionsFrame.origin, size: additionalActionsSize)
+                    actionsFrame = actionsFrame.offsetBy(dx: 0.0, dy: additionalActionsSize.height + 10.0)
+                }""", """                } else {
+                    additionalActionsFrame = CGRect(origin: actionsFrame.origin, size: additionalActionsSize)
+                    if additionalActionsSize.width > actionsFrame.width {
+                        // A full-width block is centered under the content.
+                        additionalActionsFrame.origin.x = floor((layout.size.width - additionalActionsSize.width) / 2.0)
+                    }
+                    actionsFrame = actionsFrame.offsetBy(dx: 0.0, dy: additionalActionsSize.height + 10.0)
+                }"""),
+    ("""            transition.updateFrame(node: self.additionalActionsStackNode, frame: additionalActionsFrame.offsetBy(dx: -combinedActionsFrame.minX, dy: -combinedActionsFrame.minY), beginWithCurrentState: true)
+""", """            transition.updateFrame(node: self.additionalActionsStackNode, frame: additionalActionsFrame.offsetBy(dx: -combinedActionsFrame.minX, dy: -combinedActionsFrame.minY), beginWithCurrentState: true)
+
+            // Keep a focused text field inside the menu above the keyboard.
+            var keyboardLift: CGFloat = 0.0
+            if let inputHeight = layout.inputHeight, inputHeight > 0.0, additionalActionsSize.height > 0.0, contextMenuViewContainsFirstResponder(self.actionsContainerNode.view) {
+                let fieldBottom = self.scrollNode.view.convert(CGPoint(x: 0.0, y: additionalActionsFrame.maxY + additionalVisibleOffsetY), to: self.view).y
+                let maxFieldBottom = layout.size.height - inputHeight - 10.0
+                if fieldBottom > maxFieldBottom {
+                    keyboardLift = fieldBottom - maxFieldBottom
+                }
+            }
+            transition.updateSublayerTransformOffset(layer: self.scrollNode.layer, offset: CGPoint(x: 0.0, y: -keyboardLift))
+"""),
+    ("""    func wantsDisplayBelowKeyboard() -> Bool {
+        if let reactionContextNode = self.reactionContextNode {""", """    func wantsDisplayBelowKeyboard() -> Bool {
+        if contextMenuViewContainsFirstResponder(self.actionsContainerNode.view) {
+            return true
+        }
+        if let reactionContextNode = self.reactionContextNode {"""),
+], append="""
+
+private func contextMenuViewContainsFirstResponder(_ view: UIView) -> Bool {
+    if view.isFirstResponder {
+        return true
+    }
+    for subview in view.subviews {
+        if contextMenuViewContainsFirstResponder(subview) {
+            return true
+        }
+    }
+    return false
+}
+""")
 
 path = root + "/submodules/ChatListUI/Sources/ChatListController.swift"
 source = open(path, encoding="utf-8").read()
