@@ -1,4 +1,4 @@
-"""Feature: Reply from Preview.
+"""Features: Reply from Preview + Swipe through Previews.
 
 Long-press a chat in the chat list: between the chat preview and its context menu a
 separate glass block appears with a message field (attach, text, mic/send). The
@@ -309,30 +309,100 @@ private func contextMenuViewContainsFirstResponder(_ view: UIView) -> Bool {
 
 path = root + "/submodules/ChatListUI/Sources/ChatListController.swift"
 source = open(path, encoding="utf-8").read()
-old = '''let contextController = makeContextController(context: strongSelf.context, presentationData: strongSelf.presentationData, source: source, items: chatContextMenuItems(context: strongSelf.context, peerId: peer.peerId, promoInfo: promoInfo, source: .chatList(filter: strongSelf.chatListDisplayNode.mainContainerNode.currentItemNode.chatListFilter), chatListController: strongSelf, joined: joined) |> map { ContextController.Items(content: .list($0)) }, gesture: gesture)'''
-new = '''// Reply from Preview: a message field between the preview and the menu.
-                        let canReplyFromPreview: Bool
-                        if case let .channel(channel) = peer.peer, case .broadcast = channel.info {
-                            canReplyFromPreview = false
-                        } else {
-                            canReplyFromPreview = true
-                        }
-                        let replyFromPreviewItem = ChatListPreviewReplyItem(context: strongSelf.context, peerId: peer.peerId, openChat: { [weak strongSelf] in
-                            guard let strongSelf, let navigationController = strongSelf.navigationController as? NavigationController, let targetPeer = peer.peer else {
-                                return
+old = """let contextController = makeContextController(context: strongSelf.context, presentationData: strongSelf.presentationData, source: source, items: chatContextMenuItems(context: strongSelf.context, peerId: peer.peerId, promoInfo: promoInfo, source: .chatList(filter: strongSelf.chatListDisplayNode.mainContainerNode.currentItemNode.chatListFilter), chatListController: strongSelf, joined: joined) |> map { ContextController.Items(content: .list($0)) }, gesture: gesture)"""
+new = """let chatListFilter = strongSelf.chatListDisplayNode.mainContainerNode.currentItemNode.chatListFilter
+
+                        // Reply from Preview: every preview gets a message field between it and its menu.
+                        let makePreviewItems: (EnginePeer.Id, EnginePeer?, Bool, Bool) -> Signal<ContextController.Items, NoError> = { [weak strongSelf] itemPeerId, targetPeer, joinedValue, isMainPreview in
+                            guard let strongSelf else {
+                                return .single(ContextController.Items(content: .list([])))
                             }
-                            strongSelf.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: strongSelf.context, chatLocation: .peer(targetPeer)))
-                        })
-                        let contextController = makeContextController(context: strongSelf.context, presentationData: strongSelf.presentationData, source: source, items: chatContextMenuItems(context: strongSelf.context, peerId: peer.peerId, promoInfo: promoInfo, source: .chatList(filter: strongSelf.chatListDisplayNode.mainContainerNode.currentItemNode.chatListFilter), chatListController: strongSelf, joined: joined) |> map { items -> ContextController.Items in
-                            if canReplyFromPreview {
-                                return ContextController.Items(content: .twoLists(items, [.custom(replyFromPreviewItem, false)]))
+                            let canReply: Bool
+                            if case let .channel(channel) = targetPeer, case .broadcast = channel.info {
+                                canReply = false
                             } else {
-                                return ContextController.Items(content: .list(items))
+                                canReply = true
                             }
-                        }, gesture: gesture)'''
+                            let replyItem = ChatListPreviewReplyItem(context: strongSelf.context, peerId: itemPeerId, openChat: { [weak strongSelf] in
+                                guard let strongSelf, let navigationController = strongSelf.navigationController as? NavigationController, let targetPeer else {
+                                    return
+                                }
+                                strongSelf.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: strongSelf.context, chatLocation: .peer(targetPeer)))
+                            })
+                            return chatContextMenuItems(context: strongSelf.context, peerId: itemPeerId, promoInfo: isMainPreview ? promoInfo : nil, source: .chatList(filter: chatListFilter), chatListController: strongSelf, joined: joinedValue)
+                            |> map { items -> ContextController.Items in
+                                if canReply {
+                                    return ContextController.Items(content: .twoLists(items, [.custom(replyItem, false)]))
+                                } else {
+                                    return ContextController.Items(content: .list(items))
+                                }
+                            }
+                        }
+
+                        var previewSources: [ContextController.Source] = [ContextController.Source(
+                            id: AnyHashable(peer.peerId),
+                            title: peer.peer?.compactDisplayTitle ?? "",
+                            source: source,
+                            items: makePreviewItems(peer.peerId, peer.peer, joined, true)
+                        )]
+
+                        // Swipe through Previews: neighbouring chats become extra pages of the same
+                        // context menu, so you can flip left/right through them without letting go.
+                        var isCommunityPreview = false
+                        if case .community = peer.peer {
+                            isCommunityPreview = true
+                        }
+                        if case .controller = source, !isCommunityPreview {
+                            var rows: [(peerData: ChatListItemContent.PeerData, node: ChatListItemNode)] = []
+                            strongSelf.chatListDisplayNode.mainContainerNode.currentItemNode.forEachItemNode { itemNode in
+                                guard let itemNode = itemNode as? ChatListItemNode, let rowItem = itemNode.item, case let .peer(rowData) = rowItem.content, let rowPeer = rowData.peer.peer else {
+                                    return
+                                }
+                                if case .community = rowPeer {
+                                    return
+                                }
+                                if case let .channel(channel) = rowPeer, channel.isForumOrMonoForum {
+                                    return
+                                }
+                                if rowData.displayAsTopicList || rowPeer.id == strongSelf.context.account.peerId {
+                                    return
+                                }
+                                rows.append((rowData, itemNode))
+                            }
+                            rows.sort(by: { $0.node.frame.minY < $1.node.frame.minY })
+
+                            if let currentIndex = rows.firstIndex(where: { $0.peerData.peer.peerId == peer.peerId }) {
+                                let lowerBound = max(0, currentIndex - 2)
+                                let upperBound = min(rows.count - 1, currentIndex + 2)
+                                var orderedSources: [ContextController.Source] = []
+                                for index in lowerBound ... upperBound {
+                                    if index == currentIndex {
+                                        orderedSources.append(previewSources[0])
+                                        continue
+                                    }
+                                    let row = rows[index]
+                                    let rowPeerId = row.peerData.peer.peerId
+                                    let rowChatController = strongSelf.context.sharedContext.makeChatController(context: strongSelf.context, chatLocation: .peer(id: rowPeerId), subject: nil, botStart: nil, mode: .standard(.previewing), params: nil)
+                                    rowChatController.customNavigationController = strongSelf.navigationController as? NavigationController
+                                    rowChatController.canReadHistory.set(false)
+                                    rowChatController.dismissPreviewing = { animateIn in
+                                        return dismissPreviewingImpl?(animateIn) ?? {}
+                                    }
+                                    orderedSources.append(ContextController.Source(
+                                        id: AnyHashable(rowPeerId),
+                                        title: row.peerData.peer.peer?.compactDisplayTitle ?? "",
+                                        source: .controller(ContextControllerContentSourceImpl(controller: rowChatController, sourceNode: row.node.contextContainer, navigationController: strongSelf.navigationController as? NavigationController)),
+                                        items: makePreviewItems(rowPeerId, row.peerData.peer.peer, false, false)
+                                    ))
+                                }
+                                previewSources = orderedSources
+                            }
+                        }
+
+                        let contextController = makeContextController(context: strongSelf.context, presentationData: strongSelf.presentationData, configuration: ContextController.Configuration(sources: previewSources, initialId: AnyHashable(peer.peerId)), gesture: gesture)"""
 count = source.count(old)
 if count != 1:
     sys.exit(f"reply_from_preview: expected 1 match in ChatListController, found {count}")
 source = source.replace(old, new, 1)
 open(path, "w", encoding="utf-8").write(source)
-print("reply_from_preview: preview reply item installed")
+print("reply_from_preview + swipe_through_previews: chat list preview patched")
