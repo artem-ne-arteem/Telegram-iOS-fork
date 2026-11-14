@@ -43,6 +43,9 @@ jobs:
             git -C tg apply --whitespace=nowarn "$GITHUB_WORKSPACE/$p"
           done
 
+      - name: Refresh expired fake provisioning profiles
+        run: python3 scripts/refresh_profiles.py tg/build-system/fake-codesigning
+
       - name: Configuration
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
