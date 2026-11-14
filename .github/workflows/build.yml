@@ -52,6 +52,9 @@ jobs:
       - name: "Feature: Schedule Dial"
         run: python3 scripts/feature_schedule_dial.py tg
 
+      - name: "Feature: Floating Chat"
+        run: python3 scripts/feature_floating_chat.py tg
+
       - name: Refresh expired fake provisioning profiles
         run: python3 scripts/refresh_profiles.py tg/build-system/fake-codesigning
 
