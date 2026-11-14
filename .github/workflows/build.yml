@@ -49,6 +49,9 @@ jobs:
       - name: "Feature: Reply from Preview"
         run: python3 scripts/feature_reply_from_preview.py tg
 
+      - name: "Feature: Schedule Dial"
+        run: python3 scripts/feature_schedule_dial.py tg
+
       - name: Refresh expired fake provisioning profiles
         run: python3 scripts/refresh_profiles.py tg/build-system/fake-codesigning
 
