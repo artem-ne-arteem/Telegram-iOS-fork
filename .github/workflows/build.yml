@@ -28,12 +28,9 @@ jobs:
 
       - name: Free disk space
         run: |
-          KEEP=$(xcode-select -p | sed 's#/Contents/Developer##')
-          for x in /Applications/Xcode_*.app; do
-            if [ "$x" != "$KEEP" ] && [ ! -L "$x" ]; then sudo rm -rf "$x"; fi
-          done
           sudo rm -rf ~/Library/Android /usr/local/share/dotnet ~/.dotnet ~/Library/Developer/CoreSimulator/Caches || true
           df -h /
+          xcode-select -p
 
       - name: Clone Telegram-iOS
         run: git clone --recursive --depth 1 --shallow-submodules -j8 https://github.com/TelegramMessenger/Telegram-iOS.git tg
@@ -52,7 +49,7 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
         run: python3 scripts/make_config.py tg/build-system/appstore-configuration.json config.json
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: ~/telegram-bazel-cache
           key: bazel-${{ matrix.runner }}-${{ github.sha }}
@@ -70,7 +67,8 @@ jobs:
             --codesigningInformationPath=build-system/fake-codesigning \
             --buildNumber=100001 \
             --configuration=release_arm64 2>&1 | tee "$GITHUB_WORKSPACE/build.log" || {
-              grep -E "error:|ERROR:|Exception|Required Xcode" "$GITHUB_WORKSPACE/build.log" | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+              grep -E "error:|ERROR:|Exception|Required Xcode|Could not" "$GITHUB_WORKSPACE/build.log" | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+              tail -15 "$GITHUB_WORKSPACE/build.log" | while IFS= read -r line; do echo "::warning::$line"; done
               df -h /
               exit 1
             }
