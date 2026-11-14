@@ -1,0 +1,88 @@
+name: Build Telegram IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    # Две очереди: новый образ macOS 26 и запасной macOS 15.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          XC=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          sw_vers
+          df -h /
+
+      - name: Free disk space
+        run: |
+          KEEP=$(xcode-select -p | sed 's#/Contents/Developer##')
+          for x in /Applications/Xcode_*.app; do
+            if [ "$x" != "$KEEP" ] && [ ! -L "$x" ]; then sudo rm -rf "$x"; fi
+          done
+          sudo rm -rf ~/Library/Android /usr/local/share/dotnet ~/.dotnet ~/Library/Developer/CoreSimulator/Caches || true
+          df -h /
+
+      - name: Clone Telegram-iOS
+        run: git clone --recursive --depth 1 --shallow-submodules -j8 https://github.com/TelegramMessenger/Telegram-iOS.git tg
+
+      - name: Apply our patches
+        run: |
+          shopt -s nullglob
+          for p in patches/*.patch; do
+            echo "Applying $p"
+            git -C tg apply --whitespace=nowarn "$GITHUB_WORKSPACE/$p"
+          done
+
+      - name: Configuration
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+        run: python3 scripts/make_config.py tg/build-system/appstore-configuration.json config.json
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/telegram-bazel-cache
+          key: bazel-${{ matrix.runner }}-${{ github.sha }}
+          restore-keys: bazel-${{ matrix.runner }}-
+
+      - name: Build
+        working-directory: tg
+        run: |
+          set -o pipefail
+          python3 build-system/Make/Make.py \
+            --overrideXcodeVersion \
+            --cacheDir="$HOME/telegram-bazel-cache" \
+            build \
+            --configurationPath="$GITHUB_WORKSPACE/config.json" \
+            --codesigningInformationPath=build-system/fake-codesigning \
+            --buildNumber=100001 \
+            --configuration=release_arm64 2>&1 | tee "$GITHUB_WORKSPACE/build.log" || {
+              grep -E "error:|ERROR:|Exception|Required Xcode" "$GITHUB_WORKSPACE/build.log" | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+              df -h /
+              exit 1
+            }
+
+      - name: Collect IPA
+        run: |
+          IPA=$(find tg -name "Telegram.ipa" -type f | head -1)
+          echo "IPA: $IPA"
+          cp "$IPA" Telegram.ipa
+          ls -la Telegram.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Telegram-ipa-${{ matrix.runner }}
+          path: Telegram.ipa
