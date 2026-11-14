@@ -83,6 +83,12 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
         // A tap anywhere on the bar focuses the field.
         self.view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.barTapped)))
 
+        // Context menus are drawn above the keyboard. Move this one below it right away:
+        // doing it on the first tap re-parents the view and the field loses focus.
+        DispatchQueue.main.async { [weak self] in
+            self?.getController()?.overlayWantsToBeBelowKeyboardUpdated(transition: .immediate)
+        }
+
         self.updateTheme(presentationData: self.presentationData)
     }
 
@@ -142,17 +148,62 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
         }
     }
 
+    /// The text turns into an outgoing bubble and flies from the field into the preview above.
+    private func animateSentMessage(text: String) {
+        guard let window = self.view.window else {
+            return
+        }
+        let theme = self.presentationData.theme
+        let bubbleColor = theme.chat.message.outgoing.bubble.withWallpaper.fill.first ?? theme.list.itemAccentColor
+
+        let label = UILabel()
+        label.text = text
+        label.font = UIFont.systemFont(ofSize: 17.0)
+        label.textColor = theme.chat.message.outgoing.primaryTextColor
+        label.numberOfLines = 1
+        let maxTextWidth = self.view.bounds.width * 0.7
+        let textSize = label.sizeThatFits(CGSize(width: maxTextWidth, height: 100.0))
+        let bubbleSize = CGSize(width: min(maxTextWidth, ceil(textSize.width)) + 24.0, height: 36.0)
+
+        let bubble = UIView(frame: CGRect(origin: CGPoint(), size: bubbleSize))
+        bubble.backgroundColor = bubbleColor
+        bubble.layer.cornerRadius = 18.0
+        bubble.layer.cornerCurve = .continuous
+        label.frame = CGRect(x: 12.0, y: floor((bubbleSize.height - textSize.height) / 2.0), width: bubbleSize.width - 24.0, height: ceil(textSize.height))
+        bubble.addSubview(label)
+
+        let fieldFrame = self.textField.convert(self.textField.bounds, to: window)
+        bubble.center = CGPoint(x: fieldFrame.minX + bubbleSize.width / 2.0, y: fieldFrame.midY)
+        bubble.transform = CGAffineTransform(scaleX: 0.85, y: 0.85)
+        bubble.alpha = 0.0
+        window.addSubview(bubble)
+
+        // Bottom-right corner of the chat preview, right above this block.
+        let barFrame = self.view.convert(self.view.bounds, to: window)
+        let target = CGPoint(x: barFrame.maxX - 14.0 - bubbleSize.width / 2.0, y: barFrame.minY - 18.0 - bubbleSize.height / 2.0)
+
+        UIView.animate(withDuration: 0.12, animations: {
+            bubble.alpha = 1.0
+        })
+        UIView.animate(withDuration: 0.55, delay: 0.0, usingSpringWithDamping: 0.78, initialSpringVelocity: 0.3, options: [.curveEaseOut], animations: {
+            bubble.center = target
+            bubble.transform = .identity
+        }, completion: { _ in
+            UIView.animate(withDuration: 0.25, delay: 0.15, options: [], animations: {
+                bubble.alpha = 0.0
+            }, completion: { _ in
+                bubble.removeFromSuperview()
+            })
+        })
+
+        self.actionButton.transform = CGAffineTransform(scaleX: 0.8, y: 0.8)
+        UIView.animate(withDuration: 0.4, delay: 0.0, usingSpringWithDamping: 0.5, initialSpringVelocity: 0.0, options: [], animations: {
+            self.actionButton.transform = .identity
+        }, completion: nil)
+    }
+
     @objc private func barTapped() {
         self.textField.becomeFirstResponder()
-    }
-
-    func textFieldDidBeginEditing(_ textField: UITextField) {
-        // Context menus are drawn above the keyboard; move this one below it while typing.
-        self.getController()?.overlayWantsToBeBelowKeyboardUpdated(transition: .animated(duration: 0.3, curve: .spring))
-    }
-
-    func textFieldDidEndEditing(_ textField: UITextField) {
-        self.getController()?.overlayWantsToBeBelowKeyboardUpdated(transition: .animated(duration: 0.3, curve: .spring))
     }
 
     @objc private func textChanged() {
@@ -197,10 +248,11 @@ private final class ChatListPreviewReplyItemNode: ASDisplayNode, ContextMenuCust
         self.textField.text = nil
         self.updateButtons()
 
+        self.animateSentMessage(text: text)
         let _ = self.item.context.engine.messages.enqueueOutgoingMessage(to: self.item.peerId, replyTo: nil, content: .text(text, [])).startStandalone()
 
         // Leave the preview on screen for a moment so the sent message shows up in it.
-        Queue.mainQueue().after(0.8, { [weak self] in
+        Queue.mainQueue().after(1.0, { [weak self] in
             guard let self else {
                 return
             }
@@ -288,11 +340,23 @@ patch("submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextCon
 """),
     ("""    func wantsDisplayBelowKeyboard() -> Bool {
         if let reactionContextNode = self.reactionContextNode {""", """    func wantsDisplayBelowKeyboard() -> Bool {
-        if contextMenuViewContainsFirstResponder(self.actionsContainerNode.view) {
+        if contextMenuViewContainsTextField(self.actionsContainerNode.view) {
             return true
         }
         if let reactionContextNode = self.reactionContextNode {"""),
 ], append="""
+
+private func contextMenuViewContainsTextField(_ view: UIView) -> Bool {
+    if view is UITextField {
+        return true
+    }
+    for subview in view.subviews {
+        if contextMenuViewContainsTextField(subview) {
+            return true
+        }
+    }
+    return false
+}
 
 private func contextMenuViewContainsFirstResponder(_ view: UIView) -> Bool {
     if view.isFirstResponder {
