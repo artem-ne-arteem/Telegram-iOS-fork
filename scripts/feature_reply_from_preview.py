@@ -342,7 +342,14 @@ patch("submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextCon
             }
 
             if let keyboardFieldInputHeight, !isAnimatingOut {
-                contentRect.origin.y = max(contentTopInset, layout.size.height - keyboardFieldInputHeight - 10.0 - additionalActionsSize.height - contentActionsSpacing - contentRect.height)
+                // Force the content to fit between the top inset and the field above the keyboard,
+                // even when its height is not marked as resizeable.
+                let fieldTop = layout.size.height - keyboardFieldInputHeight - 10.0 - additionalActionsSize.height
+                let availableHeight = fieldTop - contentActionsSpacing - contentTopInset
+                if contentRect.height > availableHeight {
+                    contentRect.size.height = max(160.0, availableHeight)
+                }
+                contentRect.origin.y = max(contentTopInset, fieldTop - contentActionsSpacing - contentRect.height)
             }
 """),
     ("""                } else {
