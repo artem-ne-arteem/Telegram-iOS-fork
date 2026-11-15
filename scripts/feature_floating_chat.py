@@ -115,7 +115,7 @@ final class ChatFloatingBubbleController: ViewController {
     private var isClosing = false
     private var peerDisposable: Disposable?
 
-    private let bubbleSize: CGFloat = 76.0
+    private let bubbleSize: CGFloat = 78.0
     private let edgeMargin: CGFloat = 10.0
 
     init(context: AccountContext, peerId: EnginePeer.Id, peer: EnginePeer?, theme: PresentationTheme, snapshot: UIView?, sourceFrame: CGRect, navigationController: NavigationController?) {
@@ -202,7 +202,7 @@ final class ChatFloatingBubbleController: ViewController {
             self.displayNode.view.insertSubview(snapshot, belowSubview: bubble)
             UIView.animate(withDuration: 0.5, delay: 0.0, usingSpringWithDamping: 0.88, initialSpringVelocity: 0.0, options: [], animations: {
                 snapshot.frame = CGRect(x: finalCenter.x - self.bubbleSize / 2.0, y: finalCenter.y - self.bubbleSize / 2.0, width: self.bubbleSize, height: self.bubbleSize)
-                snapshot.layer.cornerRadius = self.bubbleSize * 0.32
+                snapshot.layer.cornerRadius = self.bubbleSize * 0.44
             }, completion: { _ in
                 snapshot.removeFromSuperview()
             })
@@ -211,15 +211,16 @@ final class ChatFloatingBubbleController: ViewController {
             }, completion: nil)
         }
         bubble.alpha = 0.0
-        bubble.transform = CGAffineTransform(scaleX: 0.5, y: 0.5)
-        UIView.animate(withDuration: 0.2, delay: 0.25, options: [], animations: {
+        bubble.transform = CGAffineTransform(scaleX: 0.3, y: 0.3).rotated(by: -0.4)
+        UIView.animate(withDuration: 0.18, delay: 0.22, options: [], animations: {
             bubble.alpha = 1.0
         }, completion: nil)
-        UIView.animate(withDuration: 0.7, delay: 0.25, usingSpringWithDamping: 0.45, initialSpringVelocity: 0.0, options: [.allowUserInteraction], animations: {
+        UIView.animate(withDuration: 0.8, delay: 0.22, usingSpringWithDamping: 0.48, initialSpringVelocity: 0.6, options: [.allowUserInteraction], animations: {
             bubble.transform = .identity
         }, completion: { _ in
             bubble.startIdleAnimation()
         })
+        bubble.animateAvatarIn(delay: 0.38)
     }
 
     @objc private func bubblePan(_ recognizer: UIPanGestureRecognizer) {
@@ -257,8 +258,9 @@ final class ChatFloatingBubbleController: ViewController {
             let horizontal = abs(velocity.x) > abs(velocity.y)
             let scaleX = 1.08 + (horizontal ? stretch : -stretch)
             let scaleY = 1.08 + (horizontal ? -stretch : stretch)
+            let tilt = max(-0.25, min(0.25, velocity.x / 4000.0))
             bubble.center = center
-            bubble.transform = CGAffineTransform(scaleX: scaleX, y: scaleY)
+            bubble.transform = CGAffineTransform(rotationAngle: tilt).scaledBy(x: scaleX, y: scaleY)
         case .ended, .cancelled:
             UIView.animate(withDuration: 0.2, animations: {
                 self.closeZoneView.alpha = 0.0
@@ -277,7 +279,7 @@ final class ChatFloatingBubbleController: ViewController {
             let minY = self.safeInsets.top + self.bubbleSize / 2.0 + 8.0
             let maxY = self.layoutSize.height - self.safeInsets.bottom - self.bubbleSize / 2.0 - 90.0
             let targetY = min(max(bubble.center.y + velocity.y * 0.15, minY), maxY)
-            UIView.animate(withDuration: 0.6, delay: 0.0, usingSpringWithDamping: 0.62, initialSpringVelocity: 0.0, options: [.allowUserInteraction], animations: {
+            UIView.animate(withDuration: 0.7, delay: 0.0, usingSpringWithDamping: 0.58, initialSpringVelocity: min(2.0, hypot(velocity.x, velocity.y) / 1500.0), options: [.allowUserInteraction], animations: {
                 bubble.center = CGPoint(x: targetX, y: targetY)
                 bubble.transform = .identity
             }, completion: { _ in
@@ -299,13 +301,19 @@ final class ChatFloatingBubbleController: ViewController {
         }
         self.isClosing = true
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        self.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: self.context, chatLocation: .peer(peer)))
         bubble.stopIdleAnimation()
-        UIView.animate(withDuration: 0.35, delay: 0.0, options: [.curveEaseIn], animations: {
-            bubble.transform = CGAffineTransform(scaleX: 2.2, y: 2.2)
-            bubble.alpha = 0.0
-        }, completion: { [weak self] _ in
-            self?.dismiss(completion: nil)
+        let context = self.context
+        // The bubble swells first, then the chat opens out of it.
+        UIView.animate(withDuration: 0.16, delay: 0.0, options: [.curveEaseOut], animations: {
+            bubble.transform = CGAffineTransform(scaleX: 1.25, y: 1.25)
+        }, completion: { _ in
+            context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: context, chatLocation: .peer(peer)))
+            UIView.animate(withDuration: 0.32, delay: 0.0, options: [.curveEaseIn], animations: {
+                bubble.transform = CGAffineTransform(scaleX: 3.0, y: 3.0)
+                bubble.alpha = 0.0
+            }, completion: { [weak self] _ in
+                self?.dismiss(completion: nil)
+            })
         })
     }
 
@@ -335,53 +343,77 @@ private final class ChatFloatingPassthroughNode: ASDisplayNode {
     }
 }
 
-/// A glossy jelly squircle with the chat's avatar inside.
+/// A purple liquid-glass bubble — an oval with stretched corners — with the avatar inside.
 final class ChatFloatingBubbleView: UIView {
     private let context: AccountContext
     private let theme: PresentationTheme
-    private let size: CGFloat
-    private let bodyLayer = CAGradientLayer()
-    private let bodyMask = CAShapeLayer()
+    private let glassView: UIVisualEffectView
+    private let tintLayer = CAGradientLayer()
     private let rimLayer = CAShapeLayer()
     private let avatarContainer = UIView()
     private let avatarNode: AvatarNode
-    private let gelLayer = CAGradientLayer()
     private let highlightLayer = CAGradientLayer()
-    private let lowerGlowLayer = CAGradientLayer()
+
+    private static let purple = UIColor(red: 0.55, green: 0.32, blue: 0.98, alpha: 1.0)
 
     init(size: CGFloat, context: AccountContext, theme: PresentationTheme) {
         self.context = context
         self.theme = theme
-        self.size = size
         self.avatarNode = AvatarNode(font: avatarPlaceholderFont(size: 22.0))
+
+        var isGlass = false
+        if #available(iOS 26.0, *) {
+            let glass = UIGlassEffect()
+            glass.tintColor = ChatFloatingBubbleView.purple.withAlphaComponent(0.55)
+            self.glassView = UIVisualEffectView(effect: glass)
+            isGlass = true
+        } else {
+            self.glassView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+        }
+
         super.init(frame: CGRect(x: 0.0, y: 0.0, width: size, height: size))
 
         let bounds = self.bounds
-        let squircle = UIBezierPath(roundedRect: bounds, cornerRadius: size * 0.32)
+        // Big continuous corners turn the square into an oval with stretched corners.
+        let cornerRadius = size * 0.44
+        let shape = UIBezierPath(roundedRect: bounds, cornerRadius: cornerRadius)
 
-        // Soft colored shadow under the jelly.
-        self.layer.shadowColor = UIColor(red: 0.93, green: 0.2, blue: 0.68, alpha: 1.0).cgColor
-        self.layer.shadowOpacity = 0.45
-        self.layer.shadowRadius = 14.0
+        self.layer.shadowColor = ChatFloatingBubbleView.purple.cgColor
+        self.layer.shadowOpacity = 0.5
+        self.layer.shadowRadius = 16.0
         self.layer.shadowOffset = CGSize(width: 0.0, height: 8.0)
-        self.layer.shadowPath = squircle.cgPath
+        self.layer.shadowPath = shape.cgPath
 
-        // Jelly body.
-        self.bodyLayer.frame = bounds
-        self.bodyLayer.colors = [
-            UIColor(red: 1.0, green: 0.62, blue: 0.9, alpha: 1.0).cgColor,
-            UIColor(red: 0.96, green: 0.3, blue: 0.76, alpha: 1.0).cgColor,
-            UIColor(red: 0.78, green: 0.13, blue: 0.6, alpha: 1.0).cgColor,
-        ]
-        self.bodyLayer.locations = [0.0, 0.55, 1.0]
-        self.bodyLayer.startPoint = CGPoint(x: 0.2, y: 0.0)
-        self.bodyLayer.endPoint = CGPoint(x: 0.8, y: 1.0)
-        self.bodyMask.path = squircle.cgPath
-        self.bodyLayer.mask = self.bodyMask
-        self.layer.addSublayer(self.bodyLayer)
+        self.glassView.frame = bounds
+        self.glassView.layer.cornerRadius = cornerRadius
+        self.glassView.layer.cornerCurve = .continuous
+        self.glassView.isUserInteractionEnabled = false
+        if !isGlass {
+            self.glassView.clipsToBounds = true
+        }
+        self.addSubview(self.glassView)
 
-        // Avatar sunk into the jelly.
-        let inset: CGFloat = 10.0
+        if !isGlass {
+            // Below iOS 26: a purple tint over the blur imitates the colored glass.
+            self.tintLayer.frame = bounds
+            self.tintLayer.cornerRadius = cornerRadius
+            self.tintLayer.cornerCurve = .continuous
+            self.tintLayer.colors = [
+                UIColor(red: 0.72, green: 0.55, blue: 1.0, alpha: 0.75).cgColor,
+                UIColor(red: 0.45, green: 0.22, blue: 0.92, alpha: 0.85).cgColor,
+            ]
+            self.tintLayer.startPoint = CGPoint(x: 0.2, y: 0.0)
+            self.tintLayer.endPoint = CGPoint(x: 0.8, y: 1.0)
+            self.layer.addSublayer(self.tintLayer)
+
+            self.rimLayer.path = UIBezierPath(roundedRect: bounds.insetBy(dx: 1.0, dy: 1.0), cornerRadius: cornerRadius - 1.0).cgPath
+            self.rimLayer.fillColor = UIColor.clear.cgColor
+            self.rimLayer.strokeColor = UIColor.white.withAlphaComponent(0.5).cgColor
+            self.rimLayer.lineWidth = 1.5
+            self.layer.addSublayer(self.rimLayer)
+        }
+
+        let inset: CGFloat = 9.0
         let avatarSize = size - inset * 2.0
         self.avatarContainer.frame = CGRect(x: inset, y: inset, width: avatarSize, height: avatarSize)
         self.avatarContainer.layer.cornerRadius = avatarSize / 2.0
@@ -391,38 +423,13 @@ final class ChatFloatingBubbleView: UIView {
         self.avatarContainer.addSubview(self.avatarNode.view)
         self.addSubview(self.avatarContainer)
 
-        // Pink gel over the avatar.
-        self.gelLayer.frame = self.avatarContainer.frame
-        self.gelLayer.cornerRadius = avatarSize / 2.0
-        self.gelLayer.colors = [
-            UIColor(red: 1.0, green: 0.55, blue: 0.85, alpha: 0.28).cgColor,
-            UIColor(red: 0.9, green: 0.2, blue: 0.7, alpha: 0.05).cgColor,
-        ]
-        self.gelLayer.startPoint = CGPoint(x: 0.5, y: 0.0)
-        self.gelLayer.endPoint = CGPoint(x: 0.5, y: 1.0)
-        self.layer.addSublayer(self.gelLayer)
-
-        // Rim light along the edge.
-        self.rimLayer.path = UIBezierPath(roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5), cornerRadius: size * 0.3).cgPath
-        self.rimLayer.fillColor = UIColor.clear.cgColor
-        self.rimLayer.strokeColor = UIColor.white.withAlphaComponent(0.45).cgColor
-        self.rimLayer.lineWidth = 2.0
-        self.layer.addSublayer(self.rimLayer)
-
-        // Specular highlight at the top-left and a soft glow at the bottom-right.
+        // A soft specular highlight over the glass.
         self.highlightLayer.type = .radial
-        self.highlightLayer.frame = CGRect(x: size * 0.08, y: size * 0.05, width: size * 0.62, height: size * 0.36)
-        self.highlightLayer.colors = [UIColor.white.withAlphaComponent(0.85).cgColor, UIColor.white.withAlphaComponent(0.0).cgColor]
+        self.highlightLayer.frame = CGRect(x: size * 0.1, y: size * 0.04, width: size * 0.58, height: size * 0.3)
+        self.highlightLayer.colors = [UIColor.white.withAlphaComponent(0.55).cgColor, UIColor.white.withAlphaComponent(0.0).cgColor]
         self.highlightLayer.startPoint = CGPoint(x: 0.5, y: 0.5)
         self.highlightLayer.endPoint = CGPoint(x: 1.0, y: 1.0)
         self.layer.addSublayer(self.highlightLayer)
-
-        self.lowerGlowLayer.type = .radial
-        self.lowerGlowLayer.frame = CGRect(x: size * 0.5, y: size * 0.62, width: size * 0.42, height: size * 0.3)
-        self.lowerGlowLayer.colors = [UIColor.white.withAlphaComponent(0.4).cgColor, UIColor.white.withAlphaComponent(0.0).cgColor]
-        self.lowerGlowLayer.startPoint = CGPoint(x: 0.5, y: 0.5)
-        self.lowerGlowLayer.endPoint = CGPoint(x: 1.0, y: 1.0)
-        self.layer.addSublayer(self.lowerGlowLayer)
     }
 
     required init?(coder: NSCoder) {
@@ -445,35 +452,43 @@ final class ChatFloatingBubbleView: UIView {
         )
     }
 
+    /// The avatar surfaces a moment after the glass.
+    func animateAvatarIn(delay: Double) {
+        self.avatarContainer.transform = CGAffineTransform(scaleX: 0.4, y: 0.4)
+        self.avatarContainer.alpha = 0.0
+        UIView.animate(withDuration: 0.6, delay: delay, usingSpringWithDamping: 0.55, initialSpringVelocity: 0.0, options: [.allowUserInteraction], animations: {
+            self.avatarContainer.transform = .identity
+            self.avatarContainer.alpha = 1.0
+        }, completion: nil)
+    }
+
     func startIdleAnimation() {
         let breathe = CABasicAnimation(keyPath: "transform.scale")
         breathe.fromValue = 1.0
-        breathe.toValue = 1.035
-        breathe.duration = 1.6
+        breathe.toValue = 1.04
+        breathe.duration = 1.8
         breathe.autoreverses = true
         breathe.repeatCount = .infinity
         breathe.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        self.bodyLayer.add(breathe, forKey: "breathe")
-        self.rimLayer.add(breathe, forKey: "breathe")
+        self.avatarContainer.layer.add(breathe, forKey: "breathe")
     }
 
     func stopIdleAnimation() {
-        self.bodyLayer.removeAnimation(forKey: "breathe")
-        self.rimLayer.removeAnimation(forKey: "breathe")
+        self.avatarContainer.layer.removeAnimation(forKey: "breathe")
     }
 
     func wobble() {
         let wobble = CAKeyframeAnimation(keyPath: "transform")
         wobble.values = [
             NSValue(caTransform3D: CATransform3DIdentity),
-            NSValue(caTransform3D: CATransform3DMakeScale(1.14, 0.88, 1.0)),
-            NSValue(caTransform3D: CATransform3DMakeScale(0.93, 1.07, 1.0)),
-            NSValue(caTransform3D: CATransform3DMakeScale(1.04, 0.97, 1.0)),
+            NSValue(caTransform3D: CATransform3DMakeScale(1.18, 0.86, 1.0)),
+            NSValue(caTransform3D: CATransform3DMakeScale(0.9, 1.1, 1.0)),
+            NSValue(caTransform3D: CATransform3DMakeScale(1.06, 0.95, 1.0)),
+            NSValue(caTransform3D: CATransform3DMakeScale(0.98, 1.02, 1.0)),
             NSValue(caTransform3D: CATransform3DIdentity),
         ]
-        wobble.keyTimes = [0.0, 0.25, 0.5, 0.75, 1.0]
-        wobble.duration = 0.55
-        wobble.isAdditive = false
+        wobble.keyTimes = [0.0, 0.2, 0.42, 0.62, 0.82, 1.0]
+        wobble.duration = 0.7
         self.layer.add(wobble, forKey: "wobble")
     }
 }
