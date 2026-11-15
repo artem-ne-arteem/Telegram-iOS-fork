@@ -50,7 +50,9 @@ jobs:
         run: python3 scripts/feature_reply_from_preview.py tg
 
       - name: "Feature: Schedule Dial"
-        run: python3 scripts/feature_schedule_dial.py tg
+        run: |
+          cp features/schedule-dial/ChatScheduleDial.swift tg/submodules/TelegramUI/Sources/Chat/
+          git -C tg apply "$GITHUB_WORKSPACE/features/schedule-dial/telegram-ios.patch"
 
       - name: "Feature: Floating Chat"
         run: python3 scripts/feature_floating_chat.py tg

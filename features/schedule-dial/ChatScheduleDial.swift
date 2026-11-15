@@ -1,38 +1,26 @@
-"""Feature: Schedule Dial.
+// Schedule Dial
+//
+// Long-press Send: a rounded glass dome appears above the send button. The long hand
+// picks the hour, the short hand the minutes (5 min steps), the bell on top toggles a
+// silent send, and the send button turns into a "schedule" button. The message is
+// scheduled through Telegram's own scheduled messages.
 
-Long-press Send: a glass half-circle dial appears above the send button. The long hand
-picks the hour, the short hand the minutes, the bell on top toggles a silent send.
-Tapping the clock button schedules the message with Telegram's own scheduled messages."""
-import sys
+import Foundation
+import UIKit
+import AsyncDisplayKit
+import ContextUI
+import Display
+import SwiftSignalKit
+import TelegramCore
+import TelegramNotices
+import ChatSendMessageActionUI
+import AccountContext
+import TopMessageReactions
+import ReactionSelectionNode
+import ChatControllerInteraction
+import ChatSendAudioMessageContextPreview
 
-root = sys.argv[1]
-path = root + "/submodules/TelegramUI/Sources/Chat/ChatMessageDisplaySendMessageOptions.swift"
-source = open(path, encoding="utf-8").read()
-
-old = "func chatMessageDisplaySendMessageOptions(selfController: ChatControllerImpl, node: ASDisplayNode, gesture: ContextGesture) {\n"
-new = """func chatMessageDisplaySendMessageOptions(selfController: ChatControllerImpl, node: ASDisplayNode, gesture: ContextGesture) {
-    // Schedule Dial: a new message is scheduled from a dial instead of the options menu.
-    if selfController.presentationInterfaceState.interfaceState.editMessage == nil, selfController.presentationInterfaceState.subject != .scheduledMessages, selfController.chatLocation.peerId != nil {
-        // The long-press gesture lives on the send button itself.
-        let sendControl = gesture.view?.asyncdisplaykit_node as? ASControlNode
-        gesture.cancel()
-        presentChatScheduleDial(selfController: selfController, sendButton: node, sendControl: sendControl)
-        return
-    }
-    chatMessageDisplayDefaultSendMessageOptions(selfController: selfController, node: node, gesture: gesture)
-}
-
-private func chatMessageDisplayDefaultSendMessageOptions(selfController: ChatControllerImpl, node: ASDisplayNode, gesture: ContextGesture) {
-"""
-if source.count(old) != 1:
-    sys.exit("schedule_dial: entry point not found")
-source = source.replace(old, new, 1)
-
-source += r'''
-
-// MARK: - Schedule Dial
-
-private func presentChatScheduleDial(selfController: ChatControllerImpl, sendButton: ASDisplayNode, sendControl: ASControlNode?) {
+func presentChatScheduleDial(selfController: ChatControllerImpl, sendButton: ASDisplayNode, sendControl: ASControlNode?) {
     guard let window = selfController.view.window else {
         return
     }
@@ -544,7 +532,3 @@ private final class ChatScheduleDialView: UIView {
         })
     }
 }
-'''
-
-open(path, "w", encoding="utf-8").write(source)
-print("schedule_dial: send options patched")
