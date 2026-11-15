@@ -377,6 +377,16 @@ patch("submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextCon
             }
             transition.updateSublayerTransformOffset(layer: self.scrollNode.layer, offset: CGPoint(x: 0.0, y: -keyboardLift))
 """),
+    ("""    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        var adjustedBounds = scrollView.bounds""", """    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        // UIKit scrolls a scroll view to reveal a text field that becomes first responder.
+        // The focused field in the menu is already laid out above the keyboard, so keep the
+        // menu still; otherwise the preview is pushed off the top of the screen.
+        if scrollView.contentOffset.y != 0.0, contextMenuViewContainsFirstResponder(self.actionsContainerNode.view) {
+            scrollView.contentOffset = CGPoint()
+            return
+        }
+        var adjustedBounds = scrollView.bounds"""),
     ("""    func wantsDisplayBelowKeyboard() -> Bool {
         if let reactionContextNode = self.reactionContextNode {""", """    func wantsDisplayBelowKeyboard() -> Bool {
         if contextMenuViewContainsTextField(self.actionsContainerNode.view) {

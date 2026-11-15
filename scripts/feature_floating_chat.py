@@ -49,7 +49,7 @@ extension ChatControllerImpl {
         let translation = max(0.0, recognizer.translation(in: self.view).y)
         switch recognizer.state {
         case .changed:
-            // The chat follows the finger and starts shrinking towards a bubble.
+            // The chat follows the finger and starts shrinking towards a blob.
             let progress = min(1.0, translation / 240.0)
             let scale = 1.0 - progress * 0.14
             self.view.transform = CGAffineTransform(translationX: 0.0, y: translation * 0.4).scaledBy(x: scale, y: scale)
@@ -84,6 +84,7 @@ extension ChatControllerImpl {
             peerId: peerId,
             peer: peer,
             theme: self.presentationData.theme,
+            closeTitle: self.presentationData.strings.Common_Close,
             snapshot: snapshot,
             sourceFrame: sourceFrame,
             navigationController: navigationController
@@ -95,12 +96,13 @@ extension ChatControllerImpl {
     }
 }
 
-/// Presented at window level; lets every touch outside the bubble through.
+/// Presented at window level; lets every touch outside the blob through.
 final class ChatFloatingBubbleController: ViewController {
     private let context: AccountContext
     private let peerId: EnginePeer.Id
     private var peer: EnginePeer?
     private let theme: PresentationTheme
+    private let closeTitle: String
     private var snapshot: UIView?
     private let sourceFrame: CGRect
     private weak var chatNavigationController: NavigationController?
@@ -108,6 +110,7 @@ final class ChatFloatingBubbleController: ViewController {
     private var bubbleView: ChatFloatingBubbleView?
     private let closeZoneView = UIView()
     private let closeIconView = UIImageView()
+    private let closeOptionButton = UIButton(type: .system)
     private var layoutSize = CGSize()
     private var safeInsets = UIEdgeInsets()
     private var dragStartCenter = CGPoint()
@@ -115,14 +118,14 @@ final class ChatFloatingBubbleController: ViewController {
     private var isClosing = false
     private var peerDisposable: Disposable?
 
-    private let bubbleSize: CGFloat = 78.0
-    private let edgeMargin: CGFloat = 10.0
+    private let bubbleSize = CGSize(width: 104.0, height: 78.0)
 
-    init(context: AccountContext, peerId: EnginePeer.Id, peer: EnginePeer?, theme: PresentationTheme, snapshot: UIView?, sourceFrame: CGRect, navigationController: NavigationController?) {
+    init(context: AccountContext, peerId: EnginePeer.Id, peer: EnginePeer?, theme: PresentationTheme, closeTitle: String, snapshot: UIView?, sourceFrame: CGRect, navigationController: NavigationController?) {
         self.context = context
         self.peerId = peerId
         self.peer = peer
         self.theme = theme
+        self.closeTitle = closeTitle
         self.snapshot = snapshot
         self.sourceFrame = sourceFrame
         self.chatNavigationController = navigationController
@@ -154,6 +157,11 @@ final class ChatFloatingBubbleController: ViewController {
         }
     }
 
+    /// Bottom center, just above the tab bar.
+    private var homeCenter: CGPoint {
+        return CGPoint(x: self.layoutSize.width / 2.0, y: self.layoutSize.height - max(self.safeInsets.bottom, 20.0) - 78.0 - self.bubbleSize.height / 2.0)
+    }
+
     private func setupBubble() {
         let bubble = ChatFloatingBubbleView(size: self.bubbleSize, context: self.context, theme: self.theme)
         bubble.setPeer(self.peer)
@@ -168,17 +176,21 @@ final class ChatFloatingBubbleController: ViewController {
             })
         }
 
-        let finalCenter = CGPoint(x: self.layoutSize.width - self.edgeMargin - self.bubbleSize / 2.0, y: self.layoutSize.height * 0.32)
+        let finalCenter = self.homeCenter
         bubble.center = finalCenter
 
         let pan = UIPanGestureRecognizer(target: self, action: #selector(self.bubblePan(_:)))
         bubble.addGestureRecognizer(pan)
         let tap = UITapGestureRecognizer(target: self, action: #selector(self.bubbleTap))
         bubble.addGestureRecognizer(tap)
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(self.bubbleLongPress(_:)))
+        longPress.minimumPressDuration = 0.4
+        bubble.addGestureRecognizer(longPress)
+        tap.require(toFail: longPress)
 
-        // Close zone at the bottom, visible while dragging.
+        // Close zone at the top while dragging.
         let closeSize: CGFloat = 64.0
-        self.closeZoneView.frame = CGRect(x: (self.layoutSize.width - closeSize) / 2.0, y: self.layoutSize.height - self.safeInsets.bottom - 40.0 - closeSize, width: closeSize, height: closeSize)
+        self.closeZoneView.frame = CGRect(x: (self.layoutSize.width - closeSize) / 2.0, y: self.safeInsets.top + 24.0, width: closeSize, height: closeSize)
         self.closeZoneView.backgroundColor = UIColor(white: 0.1, alpha: 0.55)
         self.closeZoneView.layer.cornerRadius = closeSize / 2.0
         self.closeZoneView.alpha = 0.0
@@ -189,10 +201,23 @@ final class ChatFloatingBubbleController: ViewController {
         self.closeZoneView.addSubview(self.closeIconView)
         self.displayNode.view.addSubview(self.closeZoneView)
 
+        // "Close" option shown on long press.
+        self.closeOptionButton.setTitle("✕  " + self.closeTitle, for: .normal)
+        self.closeOptionButton.titleLabel?.font = UIFont.systemFont(ofSize: 16.0, weight: .semibold)
+        self.closeOptionButton.setTitleColor(.white, for: .normal)
+        self.closeOptionButton.backgroundColor = UIColor(red: 0.35, green: 0.2, blue: 0.7, alpha: 0.92)
+        self.closeOptionButton.sizeToFit()
+        self.closeOptionButton.bounds = CGRect(x: 0.0, y: 0.0, width: self.closeOptionButton.bounds.width + 36.0, height: 42.0)
+        self.closeOptionButton.layer.cornerRadius = 21.0
+        self.closeOptionButton.alpha = 0.0
+        self.closeOptionButton.isHidden = true
+        self.closeOptionButton.addTarget(self, action: #selector(self.closeOptionPressed), for: .touchUpInside)
+        self.displayNode.view.addSubview(self.closeOptionButton)
+
         self.displayNode.view.addSubview(bubble)
         self.bubbleView = bubble
 
-        // The chat shrinks into the bubble.
+        // The chat drips down into the blob.
         if let snapshot = self.snapshot {
             self.snapshot = nil
             snapshot.frame = self.sourceFrame
@@ -200,27 +225,26 @@ final class ChatFloatingBubbleController: ViewController {
             snapshot.layer.cornerCurve = .continuous
             snapshot.clipsToBounds = true
             self.displayNode.view.insertSubview(snapshot, belowSubview: bubble)
-            UIView.animate(withDuration: 0.5, delay: 0.0, usingSpringWithDamping: 0.88, initialSpringVelocity: 0.0, options: [], animations: {
-                snapshot.frame = CGRect(x: finalCenter.x - self.bubbleSize / 2.0, y: finalCenter.y - self.bubbleSize / 2.0, width: self.bubbleSize, height: self.bubbleSize)
-                snapshot.layer.cornerRadius = self.bubbleSize * 0.44
+            UIView.animate(withDuration: 0.5, delay: 0.0, usingSpringWithDamping: 0.86, initialSpringVelocity: 0.0, options: [], animations: {
+                snapshot.frame = CGRect(x: finalCenter.x - self.bubbleSize.width / 2.0, y: finalCenter.y - self.bubbleSize.height / 2.0, width: self.bubbleSize.width, height: self.bubbleSize.height)
+                snapshot.layer.cornerRadius = self.bubbleSize.height / 2.0
             }, completion: { _ in
                 snapshot.removeFromSuperview()
             })
-            UIView.animate(withDuration: 0.25, delay: 0.25, options: [], animations: {
+            UIView.animate(withDuration: 0.25, delay: 0.22, options: [], animations: {
                 snapshot.alpha = 0.0
             }, completion: nil)
         }
         bubble.alpha = 0.0
-        bubble.transform = CGAffineTransform(scaleX: 0.3, y: 0.3).rotated(by: -0.4)
-        UIView.animate(withDuration: 0.18, delay: 0.22, options: [], animations: {
+        bubble.transform = CGAffineTransform(scaleX: 1.6, y: 0.3)
+        UIView.animate(withDuration: 0.15, delay: 0.22, options: [], animations: {
             bubble.alpha = 1.0
         }, completion: nil)
-        UIView.animate(withDuration: 0.8, delay: 0.22, usingSpringWithDamping: 0.48, initialSpringVelocity: 0.6, options: [.allowUserInteraction], animations: {
+        UIView.animate(withDuration: 0.85, delay: 0.22, usingSpringWithDamping: 0.42, initialSpringVelocity: 0.5, options: [.allowUserInteraction], animations: {
             bubble.transform = .identity
-        }, completion: { _ in
-            bubble.startIdleAnimation()
-        })
-        bubble.animateAvatarIn(delay: 0.38)
+        }, completion: nil)
+        bubble.animateAvatarIn(delay: 0.36)
+        bubble.startMorphing()
     }
 
     @objc private func bubblePan(_ recognizer: UIPanGestureRecognizer) {
@@ -229,20 +253,17 @@ final class ChatFloatingBubbleController: ViewController {
         }
         switch recognizer.state {
         case .began:
+            self.hideCloseOption()
             self.dragStartCenter = bubble.center
-            bubble.stopIdleAnimation()
             UIView.animate(withDuration: 0.2, animations: {
-                bubble.transform = CGAffineTransform(scaleX: 1.08, y: 1.08)
                 self.closeZoneView.alpha = 1.0
             })
         case .changed:
             let translation = recognizer.translation(in: self.displayNode.view)
             var center = CGPoint(x: self.dragStartCenter.x + translation.x, y: self.dragStartCenter.y + translation.y)
             let closeCenter = self.closeZoneView.center
-            let distance = hypot(center.x - closeCenter.x, center.y - closeCenter.y)
-            let overClose = distance < 90.0
+            let overClose = hypot(center.x - closeCenter.x, center.y - closeCenter.y) < 90.0
             if overClose {
-                // Snap into the close zone like a magnet.
                 center = closeCenter
             }
             if overClose != self.isOverCloseZone {
@@ -252,15 +273,13 @@ final class ChatFloatingBubbleController: ViewController {
                     self.closeZoneView.transform = overClose ? CGAffineTransform(scaleX: 1.25, y: 1.25) : .identity
                 }, completion: nil)
             }
-            // Jelly squash in the direction of movement.
+            // Stretchy blob: it elongates along the direction of movement and tilts into it.
             let velocity = recognizer.velocity(in: self.displayNode.view)
-            let stretch = min(0.12, hypot(velocity.x, velocity.y) / 12000.0)
-            let horizontal = abs(velocity.x) > abs(velocity.y)
-            let scaleX = 1.08 + (horizontal ? stretch : -stretch)
-            let scaleY = 1.08 + (horizontal ? -stretch : stretch)
-            let tilt = max(-0.25, min(0.25, velocity.x / 4000.0))
+            let speed = hypot(velocity.x, velocity.y)
+            let stretch = min(0.35, speed / 5000.0)
+            let angle = speed > 1.0 ? atan2(velocity.y, velocity.x) : 0.0
             bubble.center = center
-            bubble.transform = CGAffineTransform(rotationAngle: tilt).scaledBy(x: scaleX, y: scaleY)
+            bubble.transform = CGAffineTransform(rotationAngle: angle).scaledBy(x: 1.0 + stretch, y: 1.0 - stretch * 0.6).rotated(by: -angle)
         case .ended, .cancelled:
             UIView.animate(withDuration: 0.2, animations: {
                 self.closeZoneView.alpha = 0.0
@@ -271,28 +290,58 @@ final class ChatFloatingBubbleController: ViewController {
                 self.close()
                 return
             }
+            // Back home like on a rubber band.
             let velocity = recognizer.velocity(in: self.displayNode.view)
-            let projectedX = bubble.center.x + velocity.x * 0.15
-            let minX = self.edgeMargin + self.bubbleSize / 2.0
-            let maxX = self.layoutSize.width - self.edgeMargin - self.bubbleSize / 2.0
-            let targetX = projectedX < self.layoutSize.width / 2.0 ? minX : maxX
-            let minY = self.safeInsets.top + self.bubbleSize / 2.0 + 8.0
-            let maxY = self.layoutSize.height - self.safeInsets.bottom - self.bubbleSize / 2.0 - 90.0
-            let targetY = min(max(bubble.center.y + velocity.y * 0.15, minY), maxY)
-            UIView.animate(withDuration: 0.7, delay: 0.0, usingSpringWithDamping: 0.58, initialSpringVelocity: min(2.0, hypot(velocity.x, velocity.y) / 1500.0), options: [.allowUserInteraction], animations: {
-                bubble.center = CGPoint(x: targetX, y: targetY)
+            UIView.animate(withDuration: 0.8, delay: 0.0, usingSpringWithDamping: 0.5, initialSpringVelocity: min(2.5, hypot(velocity.x, velocity.y) / 1200.0), options: [.allowUserInteraction], animations: {
+                bubble.center = self.homeCenter
                 bubble.transform = .identity
-            }, completion: { _ in
-                bubble.startIdleAnimation()
-            })
+            }, completion: nil)
             bubble.wobble()
         default:
             break
         }
     }
 
+    @objc private func bubbleLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began, let bubble = self.bubbleView, !self.isClosing else {
+            return
+        }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        bubble.wobble()
+        let button = self.closeOptionButton
+        button.center = CGPoint(x: bubble.center.x, y: bubble.frame.minY - 14.0 - button.bounds.height / 2.0)
+        button.isHidden = false
+        button.transform = CGAffineTransform(translationX: 0.0, y: 20.0).scaledBy(x: 0.4, y: 0.4)
+        UIView.animate(withDuration: 0.45, delay: 0.0, usingSpringWithDamping: 0.62, initialSpringVelocity: 0.0, options: [.allowUserInteraction], animations: {
+            button.alpha = 1.0
+            button.transform = .identity
+        }, completion: nil)
+    }
+
+    private func hideCloseOption() {
+        let button = self.closeOptionButton
+        if button.isHidden {
+            return
+        }
+        UIView.animate(withDuration: 0.18, animations: {
+            button.alpha = 0.0
+            button.transform = CGAffineTransform(scaleX: 0.6, y: 0.6)
+        }, completion: { _ in
+            button.isHidden = true
+        })
+    }
+
+    @objc private func closeOptionPressed() {
+        self.hideCloseOption()
+        self.close()
+    }
+
     @objc private func bubbleTap() {
         guard let bubble = self.bubbleView, !self.isClosing else {
+            return
+        }
+        if !self.closeOptionButton.isHidden {
+            self.hideCloseOption()
             return
         }
         guard let peer = self.peer, let navigationController = self.chatNavigationController else {
@@ -301,18 +350,34 @@ final class ChatFloatingBubbleController: ViewController {
         }
         self.isClosing = true
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        bubble.stopIdleAnimation()
+
+        // The blob splashes open into a full screen wave, and the chat appears out of it.
+        let wave = UIView(frame: bubble.frame)
+        wave.backgroundColor = UIColor(red: 0.42, green: 0.24, blue: 0.86, alpha: 1.0)
+        wave.layer.cornerRadius = bubble.bounds.height / 2.0
+        wave.layer.cornerCurve = .continuous
+        wave.alpha = 0.0
+        self.displayNode.view.insertSubview(wave, belowSubview: bubble)
+
         let context = self.context
-        // The bubble swells first, then the chat opens out of it.
-        UIView.animate(withDuration: 0.16, delay: 0.0, options: [.curveEaseOut], animations: {
-            bubble.transform = CGAffineTransform(scaleX: 1.25, y: 1.25)
+        UIView.animate(withDuration: 0.14, delay: 0.0, options: [.curveEaseOut], animations: {
+            bubble.transform = CGAffineTransform(scaleX: 1.25, y: 0.85)
         }, completion: { _ in
-            context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: context, chatLocation: .peer(peer)))
-            UIView.animate(withDuration: 0.32, delay: 0.0, options: [.curveEaseIn], animations: {
-                bubble.transform = CGAffineTransform(scaleX: 3.0, y: 3.0)
+            UIView.animate(withDuration: 0.12, animations: {
+                wave.alpha = 1.0
                 bubble.alpha = 0.0
-            }, completion: { [weak self] _ in
-                self?.dismiss(completion: nil)
+            })
+            UIView.animate(withDuration: 0.42, delay: 0.0, usingSpringWithDamping: 0.85, initialSpringVelocity: 0.0, options: [], animations: {
+                wave.frame = CGRect(origin: CGPoint(), size: self.layoutSize)
+                wave.layer.cornerRadius = 44.0
+            }, completion: { _ in
+                context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: context, chatLocation: .peer(peer)))
+                UIView.animate(withDuration: 0.35, delay: 0.1, options: [.curveEaseOut], animations: {
+                    wave.alpha = 0.0
+                    wave.transform = CGAffineTransform(scaleX: 1.05, y: 1.05)
+                }, completion: { [weak self] _ in
+                    self?.dismiss(completion: nil)
+                })
             })
         })
     }
@@ -323,12 +388,15 @@ final class ChatFloatingBubbleController: ViewController {
         }
         self.isClosing = true
         UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
-        bubble.stopIdleAnimation()
-        UIView.animate(withDuration: 0.3, delay: 0.0, options: [.curveEaseIn], animations: {
-            bubble.transform = CGAffineTransform(scaleX: 0.1, y: 0.1)
-            bubble.alpha = 0.0
-        }, completion: { [weak self] _ in
-            self?.dismiss(completion: nil)
+        UIView.animate(withDuration: 0.12, animations: {
+            bubble.transform = CGAffineTransform(scaleX: 1.2, y: 1.2)
+        }, completion: { _ in
+            UIView.animate(withDuration: 0.25, delay: 0.0, options: [.curveEaseIn], animations: {
+                bubble.transform = CGAffineTransform(scaleX: 0.05, y: 0.05)
+                bubble.alpha = 0.0
+            }, completion: { [weak self] _ in
+                self?.dismiss(completion: nil)
+            })
         })
     }
 }
@@ -343,79 +411,71 @@ private final class ChatFloatingPassthroughNode: ASDisplayNode {
     }
 }
 
-/// A purple liquid-glass bubble — an oval with stretched corners — with the avatar inside.
+/// A purple glossy blob that slowly changes its outline, with the chat's avatar inside.
 final class ChatFloatingBubbleView: UIView {
     private let context: AccountContext
     private let theme: PresentationTheme
-    private let glassView: UIVisualEffectView
+    private let shadowLayer = CAShapeLayer()
+    private let materialView = UIView()
+    private let materialMask = CAShapeLayer()
+    private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
     private let tintLayer = CAGradientLayer()
     private let rimLayer = CAShapeLayer()
+    private let highlightLayer = CAGradientLayer()
     private let avatarContainer = UIView()
     private let avatarNode: AvatarNode
-    private let highlightLayer = CAGradientLayer()
+    private var shapes: [CGPath] = []
 
     private static let purple = UIColor(red: 0.55, green: 0.32, blue: 0.98, alpha: 1.0)
 
-    init(size: CGFloat, context: AccountContext, theme: PresentationTheme) {
+    init(size: CGSize, context: AccountContext, theme: PresentationTheme) {
         self.context = context
         self.theme = theme
-        self.avatarNode = AvatarNode(font: avatarPlaceholderFont(size: 22.0))
-
-        var isGlass = false
-        if #available(iOS 26.0, *) {
-            let glass = UIGlassEffect()
-            glass.tintColor = ChatFloatingBubbleView.purple.withAlphaComponent(0.55)
-            self.glassView = UIVisualEffectView(effect: glass)
-            isGlass = true
-        } else {
-            self.glassView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
-        }
-
-        super.init(frame: CGRect(x: 0.0, y: 0.0, width: size, height: size))
+        self.avatarNode = AvatarNode(font: avatarPlaceholderFont(size: 20.0))
+        super.init(frame: CGRect(origin: CGPoint(), size: size))
 
         let bounds = self.bounds
-        // Big continuous corners turn the square into an oval with stretched corners.
-        let cornerRadius = size * 0.44
-        let shape = UIBezierPath(roundedRect: bounds, cornerRadius: cornerRadius)
+        self.shapes = [
+            ChatFloatingBubbleView.blobPath(in: bounds, seed: 1),
+            ChatFloatingBubbleView.blobPath(in: bounds, seed: 2),
+            ChatFloatingBubbleView.blobPath(in: bounds, seed: 3),
+            ChatFloatingBubbleView.blobPath(in: bounds, seed: 4),
+        ]
 
-        self.layer.shadowColor = ChatFloatingBubbleView.purple.cgColor
-        self.layer.shadowOpacity = 0.5
-        self.layer.shadowRadius = 16.0
-        self.layer.shadowOffset = CGSize(width: 0.0, height: 8.0)
-        self.layer.shadowPath = shape.cgPath
+        self.shadowLayer.path = self.shapes[0]
+        self.shadowLayer.fillColor = ChatFloatingBubbleView.purple.withAlphaComponent(0.55).cgColor
+        self.shadowLayer.shadowColor = ChatFloatingBubbleView.purple.cgColor
+        self.shadowLayer.shadowOpacity = 0.8
+        self.shadowLayer.shadowRadius = 16.0
+        self.shadowLayer.shadowOffset = CGSize(width: 0.0, height: 8.0)
+        self.layer.addSublayer(self.shadowLayer)
 
-        self.glassView.frame = bounds
-        self.glassView.layer.cornerRadius = cornerRadius
-        self.glassView.layer.cornerCurve = .continuous
-        self.glassView.isUserInteractionEnabled = false
-        if !isGlass {
-            self.glassView.clipsToBounds = true
-        }
-        self.addSubview(self.glassView)
+        // Glassy material: blur + purple gradient, cut to the blob outline.
+        self.materialView.frame = bounds
+        self.materialView.isUserInteractionEnabled = false
+        self.blurView.frame = bounds
+        self.materialView.addSubview(self.blurView)
+        self.tintLayer.frame = bounds
+        self.tintLayer.colors = [
+            UIColor(red: 0.74, green: 0.56, blue: 1.0, alpha: 0.85).cgColor,
+            UIColor(red: 0.52, green: 0.28, blue: 0.96, alpha: 0.82).cgColor,
+            UIColor(red: 0.36, green: 0.16, blue: 0.82, alpha: 0.9).cgColor,
+        ]
+        self.tintLayer.startPoint = CGPoint(x: 0.15, y: 0.0)
+        self.tintLayer.endPoint = CGPoint(x: 0.85, y: 1.0)
+        self.materialView.layer.addSublayer(self.tintLayer)
+        self.materialMask.path = self.shapes[0]
+        self.materialView.layer.mask = self.materialMask
+        self.addSubview(self.materialView)
 
-        if !isGlass {
-            // Below iOS 26: a purple tint over the blur imitates the colored glass.
-            self.tintLayer.frame = bounds
-            self.tintLayer.cornerRadius = cornerRadius
-            self.tintLayer.cornerCurve = .continuous
-            self.tintLayer.colors = [
-                UIColor(red: 0.72, green: 0.55, blue: 1.0, alpha: 0.75).cgColor,
-                UIColor(red: 0.45, green: 0.22, blue: 0.92, alpha: 0.85).cgColor,
-            ]
-            self.tintLayer.startPoint = CGPoint(x: 0.2, y: 0.0)
-            self.tintLayer.endPoint = CGPoint(x: 0.8, y: 1.0)
-            self.layer.addSublayer(self.tintLayer)
+        self.rimLayer.path = self.shapes[0]
+        self.rimLayer.fillColor = UIColor.clear.cgColor
+        self.rimLayer.strokeColor = UIColor.white.withAlphaComponent(0.55).cgColor
+        self.rimLayer.lineWidth = 1.5
+        self.layer.addSublayer(self.rimLayer)
 
-            self.rimLayer.path = UIBezierPath(roundedRect: bounds.insetBy(dx: 1.0, dy: 1.0), cornerRadius: cornerRadius - 1.0).cgPath
-            self.rimLayer.fillColor = UIColor.clear.cgColor
-            self.rimLayer.strokeColor = UIColor.white.withAlphaComponent(0.5).cgColor
-            self.rimLayer.lineWidth = 1.5
-            self.layer.addSublayer(self.rimLayer)
-        }
-
-        let inset: CGFloat = 9.0
-        let avatarSize = size - inset * 2.0
-        self.avatarContainer.frame = CGRect(x: inset, y: inset, width: avatarSize, height: avatarSize)
+        let avatarSize: CGFloat = size.height - 22.0
+        self.avatarContainer.frame = CGRect(x: (size.width - avatarSize) / 2.0, y: (size.height - avatarSize) / 2.0, width: avatarSize, height: avatarSize)
         self.avatarContainer.layer.cornerRadius = avatarSize / 2.0
         self.avatarContainer.clipsToBounds = true
         self.avatarContainer.isUserInteractionEnabled = false
@@ -423,10 +483,9 @@ final class ChatFloatingBubbleView: UIView {
         self.avatarContainer.addSubview(self.avatarNode.view)
         self.addSubview(self.avatarContainer)
 
-        // A soft specular highlight over the glass.
         self.highlightLayer.type = .radial
-        self.highlightLayer.frame = CGRect(x: size * 0.1, y: size * 0.04, width: size * 0.58, height: size * 0.3)
-        self.highlightLayer.colors = [UIColor.white.withAlphaComponent(0.55).cgColor, UIColor.white.withAlphaComponent(0.0).cgColor]
+        self.highlightLayer.frame = CGRect(x: size.width * 0.12, y: size.height * 0.04, width: size.width * 0.5, height: size.height * 0.34)
+        self.highlightLayer.colors = [UIColor.white.withAlphaComponent(0.6).cgColor, UIColor.white.withAlphaComponent(0.0).cgColor]
         self.highlightLayer.startPoint = CGPoint(x: 0.5, y: 0.5)
         self.highlightLayer.endPoint = CGPoint(x: 1.0, y: 1.0)
         self.layer.addSublayer(self.highlightLayer)
@@ -434,6 +493,34 @@ final class ChatFloatingBubbleView: UIView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    /// A smooth irregular closed outline around a stretched ellipse.
+    private static func blobPath(in rect: CGRect, seed: Int) -> CGPath {
+        let count = 9
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let radiusX = rect.width / 2.0 - 4.0
+        let radiusY = rect.height / 2.0 - 4.0
+        var points: [CGPoint] = []
+        for index in 0 ..< count {
+            let angle = CGFloat(index) / CGFloat(count) * CGFloat.pi * 2.0
+            let noise = sin(CGFloat(seed * 7 + index * 13) * 1.37) * 0.5 + sin(CGFloat(seed * 3 + index * 5) * 2.11) * 0.5
+            let wobble = 1.0 + noise * 0.075
+            points.append(CGPoint(x: center.x + cos(angle) * radiusX * wobble, y: center.y + sin(angle) * radiusY * wobble))
+        }
+        let path = UIBezierPath()
+        path.move(to: points[0])
+        for index in 0 ..< count {
+            let p0 = points[(index - 1 + count) % count]
+            let p1 = points[index]
+            let p2 = points[(index + 1) % count]
+            let p3 = points[(index + 2) % count]
+            let control1 = CGPoint(x: p1.x + (p2.x - p0.x) / 6.0, y: p1.y + (p2.y - p0.y) / 6.0)
+            let control2 = CGPoint(x: p2.x - (p3.x - p1.x) / 6.0, y: p2.y - (p3.y - p1.y) / 6.0)
+            path.addCurve(to: p2, controlPoint1: control1, controlPoint2: control2)
+        }
+        path.close()
+        return path.cgPath
     }
 
     func setPeer(_ peer: EnginePeer?) {
@@ -452,7 +539,22 @@ final class ChatFloatingBubbleView: UIView {
         )
     }
 
-    /// The avatar surfaces a moment after the glass.
+    /// The outline slowly flows between several blob shapes.
+    func startMorphing() {
+        guard let first = self.shapes.first else {
+            return
+        }
+        let morph = CAKeyframeAnimation(keyPath: "path")
+        morph.values = self.shapes + [first]
+        morph.duration = 6.0
+        morph.repeatCount = .infinity
+        morph.calculationMode = .cubic
+        for layer in [self.materialMask, self.rimLayer, self.shadowLayer] as [CAShapeLayer] {
+            layer.add(morph, forKey: "morph")
+        }
+    }
+
+    /// The avatar surfaces a moment after the blob.
     func animateAvatarIn(delay: Double) {
         self.avatarContainer.transform = CGAffineTransform(scaleX: 0.4, y: 0.4)
         self.avatarContainer.alpha = 0.0
@@ -462,33 +564,18 @@ final class ChatFloatingBubbleView: UIView {
         }, completion: nil)
     }
 
-    func startIdleAnimation() {
-        let breathe = CABasicAnimation(keyPath: "transform.scale")
-        breathe.fromValue = 1.0
-        breathe.toValue = 1.04
-        breathe.duration = 1.8
-        breathe.autoreverses = true
-        breathe.repeatCount = .infinity
-        breathe.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        self.avatarContainer.layer.add(breathe, forKey: "breathe")
-    }
-
-    func stopIdleAnimation() {
-        self.avatarContainer.layer.removeAnimation(forKey: "breathe")
-    }
-
     func wobble() {
         let wobble = CAKeyframeAnimation(keyPath: "transform")
         wobble.values = [
             NSValue(caTransform3D: CATransform3DIdentity),
-            NSValue(caTransform3D: CATransform3DMakeScale(1.18, 0.86, 1.0)),
-            NSValue(caTransform3D: CATransform3DMakeScale(0.9, 1.1, 1.0)),
-            NSValue(caTransform3D: CATransform3DMakeScale(1.06, 0.95, 1.0)),
-            NSValue(caTransform3D: CATransform3DMakeScale(0.98, 1.02, 1.0)),
+            NSValue(caTransform3D: CATransform3DMakeScale(1.22, 0.82, 1.0)),
+            NSValue(caTransform3D: CATransform3DMakeScale(0.88, 1.12, 1.0)),
+            NSValue(caTransform3D: CATransform3DMakeScale(1.08, 0.94, 1.0)),
+            NSValue(caTransform3D: CATransform3DMakeScale(0.97, 1.03, 1.0)),
             NSValue(caTransform3D: CATransform3DIdentity),
         ]
-        wobble.keyTimes = [0.0, 0.2, 0.42, 0.62, 0.82, 1.0]
-        wobble.duration = 0.7
+        wobble.keyTimes = [0.0, 0.18, 0.4, 0.6, 0.8, 1.0]
+        wobble.duration = 0.75
         self.layer.add(wobble, forKey: "wobble")
     }
 }
