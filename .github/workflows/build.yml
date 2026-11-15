@@ -57,6 +57,9 @@ jobs:
       - name: "Feature: Floating Chat"
         run: python3 scripts/feature_floating_chat.py tg
 
+      - name: "Feature: Avatar Actions"
+        run: python3 scripts/feature_avatar_actions.py tg
+
       - name: Refresh expired fake provisioning profiles
         run: python3 scripts/refresh_profiles.py tg/build-system/fake-codesigning
 
