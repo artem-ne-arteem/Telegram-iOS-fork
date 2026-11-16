@@ -3,7 +3,7 @@ name: Build Telegram IPA
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'verify/**']
 
 jobs:
   build:
@@ -46,8 +46,10 @@ jobs:
       - name: Sideload compatibility fixes
         run: python3 scripts/sideload_fixes.py tg
 
-      - name: "Feature: Reply from Preview"
-        run: python3 scripts/feature_reply_from_preview.py tg
+      - name: "Feature: Reply from Preview (standalone package)"
+        run: |
+          cp features/reply-from-preview/ChatListPreviewReplyItem.swift tg/submodules/ChatListUI/Sources/
+          git -C tg apply "$GITHUB_WORKSPACE/features/reply-from-preview/telegram-ios.patch"
 
       - name: "Feature: Schedule Dial"
         run: |

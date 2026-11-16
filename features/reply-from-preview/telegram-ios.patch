@@ -1,0 +1,199 @@
+diff --git a/submodules/ChatListUI/Sources/ChatListController.swift b/submodules/ChatListUI/Sources/ChatListController.swift
+index f0eea83..ec62de4 100644
+--- a/submodules/ChatListUI/Sources/ChatListController.swift
++++ b/submodules/ChatListUI/Sources/ChatListController.swift
+@@ -1973,7 +1973,26 @@ public class ChatListControllerImpl: TelegramBaseController, ChatListController
+                             source = .controller(ContextControllerContentSourceImpl(controller: chatController, sourceNode: node, navigationController: strongSelf.navigationController as? NavigationController))
+                         }
+                         
+-                        let contextController = makeContextController(context: strongSelf.context, presentationData: strongSelf.presentationData, source: source, items: chatContextMenuItems(context: strongSelf.context, peerId: peer.peerId, promoInfo: promoInfo, source: .chatList(filter: strongSelf.chatListDisplayNode.mainContainerNode.currentItemNode.chatListFilter), chatListController: strongSelf, joined: joined) |> map { ContextController.Items(content: .list($0)) }, gesture: gesture)
++                        // Reply from Preview: a message field between the preview and the menu.
++                        let canReplyFromPreview: Bool
++                        if case let .channel(channel) = peer.peer, case .broadcast = channel.info {
++                            canReplyFromPreview = false
++                        } else {
++                            canReplyFromPreview = true
++                        }
++                        let replyFromPreviewItem = ChatListPreviewReplyItem(context: strongSelf.context, peerId: peer.peerId, openChat: { [weak strongSelf] in
++                            guard let strongSelf, let navigationController = strongSelf.navigationController as? NavigationController, let targetPeer = peer.peer else {
++                                return
++                            }
++                            strongSelf.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: strongSelf.context, chatLocation: .peer(targetPeer)))
++                        })
++                        let contextController = makeContextController(context: strongSelf.context, presentationData: strongSelf.presentationData, source: source, items: chatContextMenuItems(context: strongSelf.context, peerId: peer.peerId, promoInfo: promoInfo, source: .chatList(filter: strongSelf.chatListDisplayNode.mainContainerNode.currentItemNode.chatListFilter), chatListController: strongSelf, joined: joined) |> map { items -> ContextController.Items in
++                            if canReplyFromPreview {
++                                return ContextController.Items(content: .twoLists(items, [.custom(replyFromPreviewItem, false)]))
++                            } else {
++                                return ContextController.Items(content: .list(items))
++                            }
++                        }, gesture: gesture)
+                         strongSelf.presentInGlobalOverlay(contextController)
+                         
+                         dismissPreviewingImpl = { [weak self, weak contextController] animateIn in
+diff --git a/submodules/ContextUI/Sources/ContextController.swift b/submodules/ContextUI/Sources/ContextController.swift
+index d264eb3..5c79fa6 100644
+--- a/submodules/ContextUI/Sources/ContextController.swift
++++ b/submodules/ContextUI/Sources/ContextController.swift
+@@ -984,3 +984,9 @@ public func makeContextActionNode(
+         requestUpdateAction
+     )
+ }
++
++
++/// A custom context menu item laid out at the full width of the screen
++/// instead of the standard context menu width.
++public protocol ContextMenuFullWidthCustomItem: ContextMenuCustomItem {
++}
+diff --git a/submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextControllerActionsStackNode.swift b/submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextControllerActionsStackNode.swift
+index 528a1b6..2563b76 100644
+--- a/submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextControllerActionsStackNode.swift
++++ b/submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextControllerActionsStackNode.swift
+@@ -696,6 +696,10 @@ private final class ContextControllerActionsListSeparatorItemNode: ASDisplayNode
+ }
+ 
+ private final class ContextControllerActionsListCustomItemNode: ASDisplayNode, ContextControllerActionsListItemNode {
++    var wantsFullScreenWidth: Bool {
++        return self.item is ContextMenuFullWidthCustomItem
++    }
++
+     func canBeHighlighted() -> Bool {
+         if let itemNode = self.itemNode {
+             return itemNode.canBeHighlighted()
+@@ -997,9 +1001,13 @@ public final class ContextControllerActionsListStackItem: ContextControllerActio
+             for i in 0 ..< self.itemNodes.count {
+                 let item = self.itemNodes[i]
+                 
++                var itemConstrainedWidth = standardMaxWidth
++                if let customItemNode = item.node as? ContextControllerActionsListCustomItemNode, customItemNode.wantsFullScreenWidth {
++                    itemConstrainedWidth = constrainedSize.width
++                }
+                 let itemNodeLayout = item.node.update(
+                     presentationData: presentationData,
+-                    constrainedSize: CGSize(width: standardMaxWidth, height: constrainedSize.height)
++                    constrainedSize: CGSize(width: itemConstrainedWidth, height: constrainedSize.height)
+                 )
+                 
+                 if item.node.needsPadding {
+diff --git a/submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextControllerExtractedPresentationNode.swift b/submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextControllerExtractedPresentationNode.swift
+index 0c90b27..0d0ad67 100644
+--- a/submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextControllerExtractedPresentationNode.swift
++++ b/submodules/TelegramUI/Components/ContextControllerImpl/Sources/ContextControllerExtractedPresentationNode.swift
+@@ -588,6 +588,13 @@ final class ContextControllerExtractedPresentationNode: ASDisplayNode, ContextCo
+     }
+     
+     func scrollViewDidScroll(_ scrollView: UIScrollView) {
++        // UIKit scrolls a scroll view to reveal a text field that becomes first responder.
++        // The focused field in the menu is already laid out above the keyboard, so keep the
++        // menu still; otherwise the preview is pushed off the top of the screen.
++        if scrollView.contentOffset.y != 0.0, contextMenuViewContainsFirstResponder(self.actionsContainerNode.view) {
++            scrollView.contentOffset = CGPoint()
++            return
++        }
+         var adjustedBounds = scrollView.bounds
+         var topOverscroll: CGFloat = 0.0
+         
+@@ -657,6 +664,9 @@ final class ContextControllerExtractedPresentationNode: ASDisplayNode, ContextCo
+     }
+     
+     func wantsDisplayBelowKeyboard() -> Bool {
++        if contextMenuViewContainsTextField(self.actionsContainerNode.view) {
++            return true
++        }
+         if let reactionContextNode = self.reactionContextNode {
+             return reactionContextNode.wantsDisplayBelowKeyboard()
+         } else if case let .reference(source) = self.source {
+@@ -1167,8 +1177,18 @@ final class ContextControllerExtractedPresentationNode: ASDisplayNode, ContextCo
+                 transition: transition
+             )
+             
++            // While a text field in the menu is focused, the content shrinks to fit between the
++            // top of the screen and the field, which sits right above the keyboard.
++            var keyboardFieldInputHeight: CGFloat?
++            if let inputHeight = layout.inputHeight, inputHeight > 0.0, additionalActionsSize.height > 0.0, contextMenuViewContainsFirstResponder(self.actionsContainerNode.view) {
++                keyboardFieldInputHeight = inputHeight
++            }
++
+             if isContentResizeableVertically && self.actionsStackNode.topPositionLock == nil {
+                 var contentHeight = layout.size.height - contentTopInset - contentActionsSpacing - bottomInset - layout.intrinsicInsets.bottom - actionsSize.height
++                if let keyboardFieldInputHeight {
++                    contentHeight = layout.size.height - contentTopInset - contentActionsSpacing - keyboardFieldInputHeight - 10.0 - additionalActionsSize.height
++                }
+                 contentHeight = min(contentHeight, contentRect.height)
+                 contentHeight = max(contentHeight, 200.0)
+                 
+@@ -1202,6 +1222,17 @@ final class ContextControllerExtractedPresentationNode: ASDisplayNode, ContextCo
+                     contentRect.origin.y = combinedBounds.minY
+                 }
+             }
++
++            if let keyboardFieldInputHeight, !isAnimatingOut {
++                // Force the content to fit between the top inset and the field above the keyboard,
++                // even when its height is not marked as resizeable.
++                let fieldTop = layout.size.height - keyboardFieldInputHeight - 10.0 - additionalActionsSize.height
++                let availableHeight = fieldTop - contentActionsSpacing - contentTopInset
++                if contentRect.height > availableHeight {
++                    contentRect.size.height = max(160.0, availableHeight)
++                }
++                contentRect.origin.y = max(contentTopInset, fieldTop - contentActionsSpacing - contentRect.height)
++            }
+             
+             if let reactionContextNode = self.reactionContextNode {
+                 var reactionContextNodeTransition = transition
+@@ -1347,6 +1378,10 @@ final class ContextControllerExtractedPresentationNode: ASDisplayNode, ContextCo
+                     additionalActionsFrame = CGRect(origin: CGPoint(x: additionalX, y: additionalY), size: additionalActionsSize)
+                 } else {
+                     additionalActionsFrame = CGRect(origin: actionsFrame.origin, size: additionalActionsSize)
++                    if additionalActionsSize.width > actionsFrame.width {
++                        // A full-width block is centered under the content.
++                        additionalActionsFrame.origin.x = floor((layout.size.width - additionalActionsSize.width) / 2.0)
++                    }
+                     actionsFrame = actionsFrame.offsetBy(dx: 0.0, dy: additionalActionsSize.height + 10.0)
+                 }
+                 combinedActionsFrame = actionsFrame.union(additionalActionsFrame)
+@@ -1358,6 +1393,17 @@ final class ContextControllerExtractedPresentationNode: ASDisplayNode, ContextCo
+             transition.updateFrame(node: self.actionsContainerNode, frame: combinedActionsFrame.offsetBy(dx: 0.0, dy: additionalVisibleOffsetY))
+             transition.updateFrame(node: self.actionsStackNode, frame: actionsFrame.offsetBy(dx: -combinedActionsFrame.minX, dy: -combinedActionsFrame.minY), beginWithCurrentState: true)
+             transition.updateFrame(node: self.additionalActionsStackNode, frame: additionalActionsFrame.offsetBy(dx: -combinedActionsFrame.minX, dy: -combinedActionsFrame.minY), beginWithCurrentState: true)
++
++            // Keep a focused text field inside the menu above the keyboard.
++            var keyboardLift: CGFloat = 0.0
++            if let inputHeight = layout.inputHeight, inputHeight > 0.0, additionalActionsSize.height > 0.0, contextMenuViewContainsFirstResponder(self.actionsContainerNode.view) {
++                let fieldBottom = self.scrollNode.view.convert(CGPoint(x: 0.0, y: additionalActionsFrame.maxY + additionalVisibleOffsetY), to: self.view).y
++                let maxFieldBottom = layout.size.height - inputHeight - 10.0
++                if fieldBottom > maxFieldBottom {
++                    keyboardLift = fieldBottom - maxFieldBottom
++                }
++            }
++            transition.updateSublayerTransformOffset(layer: self.scrollNode.layer, offset: CGPoint(x: 0.0, y: -keyboardLift))
+             
+             if let contentNode = itemContentNode {
+                 var contentFrame = CGRect(origin: CGPoint(x: contentParentGlobalFrame.minX + contentRect.minX - contentNode.containingItem.contentRect.minX, y: contentRect.minY - contentNode.containingItem.contentRect.minY + contentVerticalOffset + additionalVisibleOffsetY), size: contentNode.containingItem.view.bounds.size)
+@@ -2309,3 +2355,28 @@ final class ContextControllerExtractedPresentationNode: ASDisplayNode, ContextCo
+     }
+ }
+ 
++
++
++private func contextMenuViewContainsTextField(_ view: UIView) -> Bool {
++    if view is UITextField {
++        return true
++    }
++    for subview in view.subviews {
++        if contextMenuViewContainsTextField(subview) {
++            return true
++        }
++    }
++    return false
++}
++
++private func contextMenuViewContainsFirstResponder(_ view: UIView) -> Bool {
++    if view.isFirstResponder {
++        return true
++    }
++    for subview in view.subviews {
++        if contextMenuViewContainsFirstResponder(subview) {
++            return true
++        }
++    }
++    return false
++}
